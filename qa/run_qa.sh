@@ -34,6 +34,9 @@ qaplotter.make_all_plots(flagging_sheet_link=link, show_target_linesonly=True)
 rc=$?
 [[ $rc == 0 ]] || { echo "run_qa: QAPlotter exit code $rc" >&2; exit 4; }
 [[ -f index.html ]] || { echo "run_qa: QAPlotter finished but index.html is missing" >&2; exit 5; }
+# The ARC files service serves .css as text/plain, so browsers ignore the weblog's stylesheet link.
+# Inline it into the extracted copy (weblog.tgz and the CASA pipeline are untouched).
+"$PY" "$(dirname "$0")/inline_weblog_css.py" "$PROD" || { echo "run_qa: inline_weblog_css failed" >&2; exit 7; }
 if [[ ${QA_NAV_FIX:-0} == 1 ]]; then
     "$PY" "$(dirname "$0")/fix_nav.py" "$PROD" || { echo "run_qa: fix_nav failed" >&2; exit 6; }
 fi
