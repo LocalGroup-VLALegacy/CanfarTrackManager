@@ -7,7 +7,8 @@
 #
 #   run_qa.sh <products_dir> [flagging_sheet_link]
 # Env: CASA_HOME (CASA install; its python3 runs QAPlotter), QA_DEPS (folder with QAPlotter and
-# its dependencies installed for that python; see qa/install_qadeps.sh).
+# its dependencies installed for that python; see qa/install_qadeps.sh), QA_NAV_FIX=1 to point
+# QAPlotter's home links at the controller's index pages (qa/fix_nav.py).
 set -uo pipefail
 PROD=${1:?usage: run_qa.sh <products_dir> [flagging_sheet_link]}
 LINK=${2:-}
@@ -33,4 +34,7 @@ qaplotter.make_all_plots(flagging_sheet_link=link, show_target_linesonly=True)
 rc=$?
 [[ $rc == 0 ]] || { echo "run_qa: QAPlotter exit code $rc" >&2; exit 4; }
 [[ -f index.html ]] || { echo "run_qa: QAPlotter finished but index.html is missing" >&2; exit 5; }
+if [[ ${QA_NAV_FIX:-0} == 1 ]]; then
+    "$PY" "$(dirname "$0")/fix_nav.py" "$PROD" || { echo "run_qa: fix_nav failed" >&2; exit 6; }
+fi
 echo "run_qa: wrote $(find . -name '*.html' -newer weblog.tgz | wc -l) html files; index.html present"

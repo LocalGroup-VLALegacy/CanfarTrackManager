@@ -21,7 +21,8 @@ not written yet.
 | Calibrate worker (`workers/calibrate_worker.sh`): stage the SDM, fresh workdir, CASA with cgroup limits, verify, QA | Working; IC10 D test track |
 | Sheets: template spec, Sheets API request builder, flag-command rebuild and checks | Offline only; no bridge to Google yet |
 | Archive sync / `init` / preflight from NRAO TAP | Probe only (`scripts/tap_probe.py`) |
-| Retention: trim `work/` after each verified run, drop old splits on restart, PROMOTING moves splits and products to `science_dir`/`products_dir`, raw deleted on COMPLETE | Working on the fake backend; not yet on a real track |
+| Retention: trim `work/` after each verified run, drop old splits on restart, PROMOTING moves splits to `science_dir`, raw deleted on COMPLETE | Working on the fake backend; not yet on a real track |
+| QA for reviewers: every iteration in `qa.products_dir/<EB>/iter_<n>/`, group read for `qa.group`, QA home and per-track index pages, ARC files links, QAPlotter nav fix | Working on the fake backend; ARC serving checked by hand; reviewer-account check pending (`docs/qa_access.md`) |
 | Project job log (`jobs/jobs.csv`, `jobs.log`, `python -m trackmanager.jobs`) and track log (`state/tracks.csv`) | Working on the fake backend |
 | `fetch_raw`, disk-quota gates | Not written |
 | `project.yaml` loader | Not written; configs are JSON with worker env (`examples/`) |
@@ -44,6 +45,7 @@ trackmanager/        Python package
 workers/calibrate_worker.sh   real calibrate stage (CASA pipeline + QA)
 casa/casa_with_limits.sh      passes the session's cores and memory limit into CASA
 qa/run_qa.sh, install_qadeps.sh   weblog + QAPlotter with CASA's python
+qa/fix_nav.py        points QAPlotter's home links at the QA index pages
 appsscript/ReviewNotifications.gs time-driven "QA ready" emails for the tracker
 scripts/             run_controller.sh, submit_controller.sh, probe.sh, tap_probe.py
 examples/            example configs (fake backend, placeholder workers, queue test, IC10 calibrate)
@@ -80,7 +82,8 @@ has it; `scripts/run_controller.sh` installs a pinned copy in headless sessions)
 | `review` | `true`: a verified iteration waits in `AWAITING_REVIEW` for a verdict |
 | `casa_home` | CASA install the workers use; the controller refuses to start if `bin/casa` is missing |
 | `session_prefix` | session-name prefix (default `tm`); also marks this project's workers when counting slots |
-| `retention` | `trim_work`, `drop_prev_iter_work` (both default `true`), `keep_raw_after_done` (`false`), `science_dir`, `products_dir` (default `<root>/science`, `<root>/products`); see `trackmanager/controller.py` |
+| `retention` | `trim_work`, `drop_prev_iter_work` (both default `true`), `keep_raw_after_done` (`false`), `science_dir` (default `<root>/science`); see `trackmanager/controller.py` |
+| `qa` | `products_dir` (default `<root>/products`), `group` (read-only reviewer group, see `docs/qa_access.md`), `url_base` (ARC files service) |
 | `auto_retry`, `poll_s`, `grace_s`, `relaunch_after_s` | see `trackmanager/controller.py` |
 | `worker.env` | `PIPELINE`, `TAR`, `CASA_WRAPPER`, `QA_DEPS`, `QA_SCRIPT`, optional `VLA_PIPELINE_CONFIG_DIR`, `ANTCORR_DIR` |
 

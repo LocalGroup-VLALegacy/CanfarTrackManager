@@ -7,6 +7,8 @@ PROJECT = {
     "sheets": {"editors": ["koch.eric.w@gmail.com"],   # human editors of protected ranges; add more here
                "links": {"qa_guide": "https://example.org/qa-guide",
                          "flag_rows_help": "https://example.org/flag-rows-help"}},
+    # derived by the controller from qa.products_dir (plan §5)
+    "qa": {"home_url": "https://ws-uv.canfar.net/arc/files/projects/VVINGS/calibrated/products/index.html"},
 }
 
 IC10_ARCHIVE = {
@@ -31,7 +33,8 @@ def samples():
         "review": {"reviewer": "Reviewer A", "signed_up": "2026-11-21 03:10:00", "verdict": "RESTART",
                    "refant_ignore": "ea26", "ack": "iteration 1 verdict RESTART applied 2026-11-21 02:55 UTC",
                    "completed": ""},
-        "links": {"qa": "https://example.org/qa/ic10d-eb42455346/iter_2/products/index.html",
+        "links": {"qa": "https://ws-uv.canfar.net/arc/files/projects/VVINGS/calibrated/products/ic10d-eb42455346/iter_2/index.html",
+                  "qa_track": "https://ws-uv.canfar.net/arc/files/projects/VVINGS/calibrated/products/ic10d-eb42455346/index.html",
                   "flag_tab": "https://docs.google.com/spreadsheets/d/EXAMPLE/edit#gid=1"},
         "signup": {"QA Reviewer": "Reviewer A", "Email": "reviewer.a@example.org", "Notes": "", "Notified iter": 2},
         "flag_rows": [

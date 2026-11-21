@@ -263,23 +263,29 @@ def test_review_restart_then_pass(tmp_path):
     archived = {d["action"]: d["result"] for d in map(read_json, (root / "inbox" / "archive").glob("*.json"))}
     assert archived["restart"] == "applied" and archived["pass"].startswith("ignored: decision for iteration 1")
     i1 = root / "tracks" / "trk" / "iter_1"
-    assert (i1 / "output.txt").exists() and (i1 / "products" / "index.html").exists()  # record kept
+    qa1 = root / "products" / "trk" / "iter_1"
+    assert (i1 / "output.txt").exists() and (qa1 / "index.html").exists()  # record kept
     assert not (i1 / "splits").exists() and not (i1 / "work").exists()  # replaced by iteration 2
     assert (root / "tracks" / "trk" / "raw" / "sdm.txt").exists()  # raw stays until the track passes
     decide(root, "--eb", "trk", "--action", "pass")
     controller(cfg, root)
     assert stages(root) == {"trk": "DONE"}
     assert read_json(i2 / "review.json")["verdict"] == "pass"
-    sci, prod = root / "science" / "trk", root / "products" / "trk"
+    sci, prod = root / "science" / "trk", root / "products" / "trk" / "iter_2"
     assert (sci / "trk.ms.split" / "table.dat").read_text() == "split of trk, iteration 2\n"
-    assert (prod / "index.html").read_text() == "QA for trk, iteration 2\n"
-    assert (prod / "manual_flagging.txt").read_text() == flags.read_text()
+    assert (prod / "index.html").read_text() == "QA for trk, iteration 2\n"  # never moved
+    assert (prod / "inputs" / "manual_flagging.txt").read_text() == flags.read_text()
+    assert read_json(prod.parent / "approved.json")["iteration"] == 2
+    home = (root / "products" / "index.html").read_text()
+    assert 'href="trk/iter_2/index.html"' in home and 'href="trk/index.html"' in home
+    track_page = (root / "products" / "trk" / "index.html").read_text()
+    assert "iteration 2</a> (approved)" in track_page and "iteration 1</a> (restart)" in track_page
     prov = read_json(sci / "provenance.json")
     assert prov["iteration"] == 2 and prov["splits"] == ["trk.ms.split"]
     assert set(prov["inputs_sha256"]) == {"manual_flagging.txt", "refant_ignore.txt"}
     assert not (root / "tracks" / "trk" / "raw").exists()  # deleted once the track passed
-    assert not (i2 / "splits").exists() and not (i2 / "products").exists()
-    assert (i1 / "products" / "index.html").exists()  # earlier iterations' QA stays in the track db
+    assert not (i2 / "splits").exists()
+    assert (qa1 / "index.html").exists()  # earlier iterations' QA stays, next to the approved one
     st = read_json(root / "state" / "trk.json")
     assert st["science_dir"] == str(sci) and st["completed_iteration"] == 2 and st["raw_deleted_at"]
     # Project job log: one row per job, with the verdict on its output and the promoted one marked.
@@ -320,7 +326,8 @@ def test_retention_trim_and_promotion_without_review(tmp_path):
     cfg, root = setup(tmp_path, [{"eb": "a", "mode": "ok", "sleep_s": 1},
                                  {"eb": "b", "mode": "ok", "sleep_s": 1, "env": {"TRIM_WORK": "0"}}],
                       retention={"science_dir": str(tmp_path / "calibrated" / "science"),
-                                 "products_dir": "qa_products", "keep_raw_after_done": True})
+                                 "keep_raw_after_done": True},
+                      qa={"products_dir": "qa_products"})
     controller(cfg, root)
     assert stages(root) == {"a": "DONE", "b": "DONE"}
     for eb in ("a", "b"):
@@ -328,7 +335,7 @@ def test_retention_trim_and_promotion_without_review(tmp_path):
         # b's worker kept work/ (TRIM_WORK=0); the controller trims it after verification.
         assert not (idir / "work").exists() and (idir / "logs" / "attempt_1" / "run.json").exists()
         assert (tmp_path / "calibrated" / "science" / eb / f"{eb}.ms.split").is_dir()  # absolute setting
-        assert (root / "qa_products" / eb / "index.html").exists()  # relative to the root
+        assert (root / "qa_products" / eb / "iter_1" / "index.html").exists()  # relative to the root
         assert (root / "tracks" / eb / "raw" / "sdm.txt").exists()  # keep_raw_after_done
     trimmed = [e for e in read_jsonl(root / "events.jsonl") if e["to"] == "trimmed"]
     assert [e["eb"] for e in trimmed] == ["b"]
@@ -352,3 +359,25 @@ def test_promotion_conflict_waits_for_operator_and_resumes(tmp_path):
     assert (root / "science" / "c" / "c.ms.split" / "table.dat").exists()
     assert not (root / "tracks" / "c" / "raw").exists()
     assert len(submissions(root)) == 1  # promotion never resubmits
+
+
+def test_qa_links_and_group_read(tmp_path):
+    import grp
+    import shutil as sh
+    from trackmanager.controller import Controller
+    group = grp.getgrgid(os.getgid()).gr_name
+    c = Controller({**BASE, "ebs": [], "qa": {"group": group}}, tmp_path / "run", backend=None, me="t")
+    assert c.qa_url("/arc/projects/X/calibrated/products/eb1/iter_2/index.html") == \
+        "https://ws-uv.canfar.net/arc/files/projects/X/calibrated/products/eb1/iter_2/index.html"
+    assert c.qa_url(tmp_path / "index.html") is None  # not on /arc: no browser link
+    assert c.qa_dir("eb1", 2) == tmp_path / "run" / "products" / "eb1" / "iter_2"
+    if not sh.which("setfacl"):
+        pytest.skip("no setfacl")
+    qd = c.qa_dir("eb1", 2)
+    (qd / "sub").mkdir(parents=True)
+    (qd / "sub" / "p.html").write_text("x")
+    assert c.grant_qa_read(qd)
+    (qd / "later.html").write_text("y")  # inherits the default entry
+    for f in (qd, qd / "sub" / "p.html", qd / "later.html"):
+        out = subprocess.run(["getfacl", "-p", str(f)], capture_output=True, text=True).stdout
+        assert f"group:{group}:r" in out, out

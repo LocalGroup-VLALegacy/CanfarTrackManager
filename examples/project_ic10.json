@@ -11,8 +11,19 @@
   "trim_work": true,
   "drop_prev_iter_work": true,
   "keep_raw_after_done": false,
-  "science_dir": "science",
-  "products_dir": "products"
+  "science_dir": "science"
+ },
+ "controller": {
+  "image": "images.canfar.net/skaha/base-notebook:latest"
+ },
+ "ebs": [
+  {
+   "eb": "ic10d-eb42455346"
+  }
+ ],
+ "qa": {
+  "products_dir": "products",
+  "group": null
  },
  "worker": {
   "image": "images.canfar.net/casa-6/casa:6.6.1-17-pipeline",
@@ -29,13 +40,5 @@
    "QA_SCRIPT": "/arc/home/ekoch/vla_processing/CanfarTrackManager/qa/run_qa.sh",
    "VLA_PIPELINE_CONFIG_DIR": "/arc/projects/VVINGS/vla-calib-mwe/runs/ic10/config/pipeline"
   }
- },
- "controller": {
-  "image": "images.canfar.net/skaha/base-notebook:latest"
- },
- "ebs": [
-  {
-   "eb": "ic10d-eb42455346"
-  }
- ]
+ }
 }

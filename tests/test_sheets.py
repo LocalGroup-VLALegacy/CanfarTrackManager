@@ -70,7 +70,7 @@ def test_tracker_row_never_overwrites_reviewer_cells(spec):
     assert new["QA Reviewer"] == "" and "QA Reviewer" not in again and "Email" not in again
     assert "Notified iter" not in new  # the script's column
     assert new["EBID"] == "42455346" and new["Stage"] == "AWAITING_REVIEW"
-    assert new["QA Server Links"].startswith('=HYPERLINK("https://example.org/qa/')
+    assert new["QA Server Links"].startswith('=HYPERLINK("https://ws-uv.canfar.net/arc/files/')
     ts = sheets.tracker_row(sheets.tab(spec, "Track Summary"), ctx, 2)
     assert ts["Fields"] == "3C48, IC10_1_CTR, J0102+5824" and set(ts) == {c["name"] for c in sheets.tab(spec, "Track Summary")["columns"]}
 
@@ -180,3 +180,23 @@ def test_protection_editors_default_and_list():
                                        sheets.protection_editors(PROJECT, sa))
     users = [r for r in reqs if "addProtectedRange" in r][0]["addProtectedRange"]["protectedRange"]["editors"]["users"]
     assert users == [sa, "koch.eric.w@gmail.com"]
+
+
+def test_qa_home_and_history_links(spec):
+    home = PROJECT["qa"]["home_url"]
+    for name in ("Track Summary", "QA Sign-up"):
+        t = sheets.tab(spec, name)
+        reqs = sheets.tracker_tab_requests(spec, name, 1, EDITORS)
+        header = reqs[1]["updateCells"]["rows"][0]["values"]
+        linked = [v["userEnteredValue"]["stringValue"] for v in header
+                  if v["userEnteredFormat"]["textFormat"].get("link", {}).get("uri") == home]
+        assert linked == ["QA link" if name == "Track Summary" else "QA Server Links"]
+        row = sheets.tracker_row(t, samples()[0], 2)
+        assert row["QA history"].startswith('=HYPERLINK("https://ws-uv.canfar.net/arc/files/') \
+            and row["QA history"].endswith('"all iterations")')
+    body = sheets.tab(spec, "QA Sign-up")["columns"]
+    assert "{{QA history}}" in next(c for c in body if c["name"] == "Email Body")["formula"]
+    cells = sheets.flag_tab_cells(spec, samples()[0])
+    assert cells["H3"].endswith('"QA history")')
+    j3 = next(h for h in spec["flagbook"]["header_cells"] if h.get("cell") == "J3")
+    assert home in j3["formula"]

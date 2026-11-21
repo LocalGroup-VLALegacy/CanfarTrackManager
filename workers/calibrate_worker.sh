@@ -13,7 +13,9 @@
 #   tracks/<EB>/iter_<n>/inputs/              manual_flagging.txt, refant_ignore.txt (frozen by the controller)
 #   tracks/<EB>/iter_<n>/logs/attempt_<k>/    stdout.log, run.json, peak_* samples
 #   tracks/<EB>/iter_<n>/work/                CASA working directory (fresh per attempt; old one moved aside)
-#   tracks/<EB>/iter_<n>/products/            renamed out of work/ after CASA; QAPlotter output added here
+#   $QA_DIR (default tracks/<EB>/iter_<n>/products/)  products renamed out of work/ after CASA,
+#                                             QAPlotter output added; the controller sets it to
+#                                             <products_dir>/<EB>/iter_<n>/ (outside the track database)
 #   tracks/<EB>/iter_<n>/splits/              the 4 science split MSs, renamed out of work/
 #   tracks/<EB>/iter_<n>/result.json
 # After result.json, work/ is deleted (full MS, calibrators MSs, caltables, flagversions,
@@ -30,6 +32,8 @@
 #   VLA_PIPELINE_CONFIG_DIR  optional per-project pipeline cfgs (default: the repo's config_files/)
 #   ANTCORR_DIR optional offline VLA_antcorr_tables (only a fallback: CANFAR sessions reach NRAO)
 #   QA_FLAG_LINK optional link to the track's flag tab, shown on the QA page
+#   QA_DIR      where this iteration's products and QA pages go (from the controller)
+#   QA_NAV_FIX  1: rewrite QAPlotter's home links for the <products_dir>/<EB>/iter_<n>/ layout
 set -uo pipefail
 
 ITERATION=${ITERATION:-1}
@@ -110,7 +114,9 @@ say "SDM $SDM: $MAIN_ROWS Main rows, $BDFS BDFs, $SDM_BYTES bytes"
 # --- fresh work directory per attempt (stale MS/context/splits break re-runs, plan §2) --
 WORK="$IDIR/work"
 [[ -e $WORK ]] && mv "$WORK" "$WORK.stale.a$ATTEMPT.$(date +%s)"
-[[ -e $IDIR/products ]] && mv "$IDIR/products" "$IDIR/products.stale.a$ATTEMPT.$(date +%s)"
+QA=${QA_DIR:-$IDIR/products}
+# An earlier attempt's products leave the reviewers' folder at once (moved into the track database).
+[[ -e $QA ]] && mv "$QA" "$IDIR/products.stale.a$ATTEMPT.$(date +%s)"
 mkdir -p "$WORK"; cd "$WORK" || finish 13
 if [[ ${SDM_MODE:-link} == copy ]]; then cp -a "$SDMDIR" "$WORK/$SDM"; else ln -s "$SDMDIR" "$WORK/$SDM"; fi
 say "workdir $WORK, SDM via ${SDM_MODE:-link}"
@@ -163,15 +169,16 @@ if (( ${#missing[@]} )); then
 fi
 
 # --- products out of work/ (a rename within /arc), then QA -------------------------------
-mv "$WORK/products" "$IDIR/products" || { say "could not move products/ out of work/"; finish 20; }
-say "=== QA (QAPlotter) in $IDIR/products"
-timed qa env CASA_HOME="$CASA_HOME" QA_DEPS="$QA_DEPS" bash "$QA_SCRIPT" "$IDIR/products" "${QA_FLAG_LINK:-}"
+mkdir -p "$(dirname "$QA")"
+mv "$WORK/products" "$QA" || { say "could not move products/ out of work/ to $QA"; finish 20; }
+say "=== QA (QAPlotter) in $QA"
+timed qa env CASA_HOME="$CASA_HOME" QA_DEPS="$QA_DEPS" QA_NAV_FIX="${QA_NAV_FIX:-0}" bash "$QA_SCRIPT" "$QA" "${QA_FLAG_LINK:-}"
 qa_rc=$?
-if [[ $qa_rc != 0 || ! -f $IDIR/products/index.html ]]; then
+if [[ $qa_rc != 0 || ! -f $QA/index.html ]]; then
     say "QA step failed (exit $qa_rc); calibration outputs are kept, no result.json"
     finish 21
 fi
-outs+=("products/weblog.tgz" "products/index.html")
+outs+=("$QA/weblog.tgz" "$QA/index.html")
 
 # --- splits out of work/ (renames), CASA logs kept with the attempt's logs ----------------
 rm -rf "$IDIR/splits"; mkdir -p "$IDIR/splits"
@@ -180,8 +187,8 @@ cp -p "$WORK"/casa-*.log "$LOGDIR/" 2>/dev/null || true
 
 json_outs=$(printf '"%s",' "${outs[@]}"); json_outs="[${json_outs%,}]"
 json_in=""; for f in "${!INPUT_SHA[@]}"; do json_in+="\"$f\": \"${INPUT_SHA[$f]}\", "; done
-printf '{"ok": true, "eb": "%s", "iteration": %s, "attempt": %s, "session": "%s", "sdm": "%s", "inputs": {%s}, "outputs": %s, "qaplotter": "%s", "finished": "%s"}\n' \
-    "$EB" "$ITERATION" "$ATTEMPT" "$SID" "$SDM" "${json_in%, }" "$json_outs" \
+printf '{"ok": true, "eb": "%s", "iteration": %s, "attempt": %s, "session": "%s", "sdm": "%s", "qa_dir": "%s", "inputs": {%s}, "outputs": %s, "qaplotter": "%s", "finished": "%s"}\n' \
+    "$EB" "$ITERATION" "$ATTEMPT" "$SID" "$SDM" "$QA" "${json_in%, }" "$json_outs" \
     "$(cat "$QA_DEPS/QAPLOTTER_SHA" 2>/dev/null)" "$(now)" > "$IDIR/partial-result.json"
 mv "$IDIR/partial-result.json" "$IDIR/result.json"
 say "outputs verified, QA written; wrote result.json"

@@ -208,12 +208,19 @@ def _protect(sheet_id, title, editable: list[str], editors: list[str]) -> dict:
         "unprotectedRanges": [_grid(sheet_id, a1) for a1 in editable]}}}
 
 
-def _header_cells(sheet_id, row0: int, names: list[str], col0: int = 0) -> dict:
+def _header_cells(sheet_id, row0: int, names: list[str], col0: int = 0,
+                  links: dict | None = None) -> dict:
+    """Bold grey header cells. links: header name -> URL, applied as a link on the header's text,
+    so the cell's value is still the plain header name."""
+    links = links or {}
+
+    def fmt(n):
+        tf = {"bold": True, **({"link": {"uri": links[n]}} if links.get(n) else {})}
+        return {"textFormat": tf, "wrapStrategy": "WRAP", "backgroundColor": _rgb("#d9d9d9")}
     return {"updateCells": {
         "start": {"sheetId": sheet_id, "rowIndex": row0, "columnIndex": col0},
         "rows": [{"values": [{"userEnteredValue": {"stringValue": n},
-                              "userEnteredFormat": {"textFormat": {"bold": True}, "wrapStrategy": "WRAP",
-                                                    "backgroundColor": _rgb("#d9d9d9")}} for n in names]}],
+                              "userEnteredFormat": fmt(n)} for n in names]}],
         "fields": "userEnteredValue,userEnteredFormat(textFormat,wrapStrategy,backgroundColor)"}}
 
 
@@ -244,7 +251,8 @@ def tracker_tab_requests(spec: dict, tab_name: str, sheet_id: int, editors: list
         "sheetId": sheet_id, "title": tab_name,
         "gridProperties": {"frozenRowCount": t.get("frozen_rows", 1), "frozenColumnCount": t.get("frozen_cols", 0)}},
         "fields": "title,gridProperties(frozenRowCount,frozenColumnCount)"}},
-        _header_cells(sheet_id, hr - 1, [c["name"] for c in cols])]
+        _header_cells(sheet_id, hr - 1, [c["name"] for c in cols],
+                      links={c["name"]: c["header_link"] for c in cols if c.get("header_link")})]
     for i, c in enumerate(cols):
         if c.get("width"):
             reqs.append(_width(sheet_id, i, c["width"]))

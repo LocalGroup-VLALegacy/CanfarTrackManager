@@ -8,7 +8,8 @@
 #   {{Header Name}}  column letter of that header in the same tab, followed by the row number
 #                    (e.g. {{EBID}} -> C7 on row 7); {{Header Name|col}} gives the letter only
 #   {r}              the row number
-#   ${project.x}     a value from project.yaml (review.email_prefix, sheets.links.qa_guide, ...)
+#   ${project.x}     a value from project.yaml (review.email_prefix, sheets.links.qa_guide, ...);
+#                    qa.home_url is derived: the ARC files URL of <products_dir>/index.html
 #
 # Protected ranges: every tab is protected; the editors are the controller's service account plus
 # project.yaml `sheets.editors` (a list; default koch.eric.w@gmail.com), via
@@ -19,6 +20,9 @@
 #   archive.*  TAP metadata (tracks/<EB>/archive.json)      state.* / job.* / run.*  controller
 #   review.*   collected by the bridge                      links.*  publisher / bridge
 #   reviewer   typed by reviewers (the only unprotected cells)
+# links.qa is the current iteration's QA page, links.qa_track the track's page listing every
+# iteration (<products_dir>/<EB>/index.html). A column's header_link makes its header cell itself
+# a link (rich-text link; the cell value stays the plain header name the bridge reads).
 #   formula    the "formula" field below                    script   the Apps Script
 version: 1
 
@@ -85,7 +89,9 @@ tracker:
         - {name: Signed up (UTC),   source: review.signed_up,       width: 140}
         - {name: Verdict,           source: review.verdict,         width: 110}
         - {name: Avoid as refant,   source: review.refant_ignore,   width: 100}
-        - {name: QA link,           source: links.qa,               width: 80, link_text: QA}
+        - {name: QA link,           source: links.qa,               width: 80, link_text: QA,
+           header_link: "${qa.home_url}", note: "Click this header for the QA home page (all tracks)."}
+        - {name: QA history,        source: links.qa_track,         width: 90, link_text: all iterations}
         - {name: Flags tab,         source: links.flag_tab,         width: 80, link_text: flags}
       protection: {mode: whole_tab, editable_columns: []}
 
@@ -113,7 +119,9 @@ tracker:
         - {name: Email,          source: reviewer,         width: 200,
            validation: {type: TEXT_IS_EMAIL, strict: false,
                         help: "The address that gets the 'QA ready' email."}}
-        - {name: QA Server Links, source: links.qa,        width: 90, link_text: QA}
+        - {name: QA Server Links, source: links.qa,        width: 90, link_text: QA,
+           header_link: "${qa.home_url}", note: "Click this header for the QA home page (all tracks)."}
+        - {name: QA history,     source: links.qa_track,   width: 90, link_text: all iterations}
         - {name: Flags tab,      source: links.flag_tab,   width: 80, link_text: flags}
         - {name: Notes,          source: reviewer,         width: 250}
         - name: Email Subject
@@ -130,6 +138,7 @@ tracker:
             "Hi "&{{QA Reviewer}}&" -- iteration "&{{Iteration}}&" of "&{{Track Name}}&
             " ("&{{Target}}&", "&{{Configuration}}&" configuration) is ready for QA review."&CHAR(10)&
             "QA products: "&{{QA Server Links}}&CHAR(10)&
+            "Earlier iterations: "&{{QA history}}&CHAR(10)&
             "Flags, verdict and refant: "&{{Flags tab}}&CHAR(10)&
             "QA guide: ${sheets.links.qa_guide}")
         - {name: Notified iter,  source: script,           width: 80,
@@ -161,6 +170,8 @@ flagbook:
     - {cell: I2, formula: '=HYPERLINK("${sheets.links.qa_guide}", "QA Guide")'}
     - {cell: J2, formula: '=HYPERLINK("https://casadocs.readthedocs.io/en/latest/notebooks/visibility_data_selection.html", "CASA string syntax guide")'}
     - {cell: I3, formula: '=HYPERLINK("${sheets.links.flag_rows_help}", "How to add rows")'}
+    - {label: G3, text: "All iterations",     value: H3, source: links.qa_track, link_text: QA history}
+    - {cell: J3, formula: '=HYPERLINK("${qa.home_url}", "QA home (all tracks)")'}
     - {label: L1, text: "Track status:\n(RESTART / COMPLETE /\nMANUAL REVIEW / HELP REQUESTED)", value: M1, source: reviewer,
        validation: {type: ONE_OF_LIST, values: [COMPLETE, RESTART, MANUAL REVIEW, HELP REQUESTED], strict: true}}
     # Verdict -> controller action (decision 2026-11-21): COMPLETE -> pass (DONE), RESTART -> restart
