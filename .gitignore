@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pydeps/
+.qadeps/
+# run roots (track databases) and probe output belong in the project space, not here
+runs/
+probes/
+*.xlsx

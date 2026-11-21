@@ -1,0 +1,16 @@
+{
+ "name": "placeholder",
+ "poll_s": 60,
+ "grace_s": 600,
+ "auto_retry": 1,
+ "max_running": 4,
+ "relaunch_after_s": null,
+ "worker": {"image": "images.canfar.net/skaha/base-notebook:latest", "cmd": "python3", "cores": null, "ram": null},
+ "controller": {"image": "images.canfar.net/skaha/base-notebook:latest"},
+ "ebs": [
+  {"eb": "ok-a", "mode": "ok", "sleep_s": 180},
+  {"eb": "ok-b", "mode": "ok", "sleep_s": 600},
+  {"eb": "flaky", "mode": "fail_first", "sleep_s": 120},
+  {"eb": "bad", "mode": "fail", "sleep_s": 60}
+ ]
+}

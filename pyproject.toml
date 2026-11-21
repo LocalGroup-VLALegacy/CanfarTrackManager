@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "canfar-track-manager"
+version = "0.1.0"
+description = "VLA track calibration and QA review on the CANFAR Science Platform"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["pyyaml"]
+
+[project.optional-dependencies]
+canfar = ["canfar==1.3.5"]          # the real scheduler backend (run_controller.sh installs it if missing)
+preview = ["openpyxl"]              # local .xlsx preview of the sheet template
+test = ["pytest", "openpyxl"]
+
+[tool.setuptools.packages.find]
+include = ["trackmanager*"]
+
+[tool.setuptools.package-data]
+trackmanager = ["templates/sheets/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"

@@ -1,0 +1,221 @@
+# Google Sheets template spec, version 1 (plan §3.5): two spreadsheets per project.
+#
+# Everything the builder (trackmanager/sheets.py) creates comes from this file: tabs, headers,
+# column sources, formulas, validation, conditional formats, protection. The bridge reads and
+# writes cells by HEADER NAME, never by position, so columns can be reordered here.
+#
+# Placeholders, filled at build time:
+#   {{Header Name}}  column letter of that header in the same tab, followed by the row number
+#                    (e.g. {{EBID}} -> C7 on row 7); {{Header Name|col}} gives the letter only
+#   {r}              the row number
+#   ${project.x}     a value from project.yaml (review.email_prefix, sheets.links.qa_guide, ...)
+#
+# Protected ranges: every tab is protected; the editors are the controller's service account plus
+# project.yaml `sheets.editors` (a list; default koch.eric.w@gmail.com), via
+# trackmanager.sheets.protection_editors(). The operator creates both spreadsheets in their own Drive and
+# shares them with the service account, so the operator owns the files and the notification script.
+#
+# Column "source" says who writes the cell:
+#   archive.*  TAP metadata (tracks/<EB>/archive.json)      state.* / job.* / run.*  controller
+#   review.*   collected by the bridge                      links.*  publisher / bridge
+#   reviewer   typed by reviewers (the only unprotected cells)
+#   formula    the "formula" field below                    script   the Apps Script
+version: 1
+
+stage_colors:          # background per Stage (plan §3.3 names, plus the controller's current QUEUED/RUNNING)
+  DISCOVERED:        "#eeeeee"
+  PREFLIGHT:         "#eeeeee"
+  SKIP_CANDIDATE:    "#fff2cc"
+  REQUEST_NEEDED:    "#ffe599"
+  REQUESTED:         "#fff2cc"
+  LINK_RECEIVED:     "#d0e0e3"
+  DOWNLOADING:       "#d0e0e3"
+  VERIFYING_RAW:     "#d0e0e3"
+  QUEUED:            "#cfe2f3"
+  CAL_QUEUED:        "#cfe2f3"
+  RUNNING:           "#9fc5e8"
+  CAL_RUNNING:       "#9fc5e8"
+  QA_PUBLISHING:     "#9fc5e8"
+  AWAITING_REVIEW:   "#f9cb9c"
+  RERUN:             "#cfe2f3"
+  PASSED:            "#b6d7a8"
+  PROMOTING:         "#b6d7a8"
+  DONE:              "#93c47d"
+  FAILED:            "#ea9999"
+  AWAITING_DECISION: "#ea9999"
+  NEEDS_MANUAL:      "#b4a7d6"
+  SKIPPED:           "#999999"
+hold_color: "#ffd966"   # Stage cell when the operator HOLD flag is set (Detail says why)
+
+tracker:
+  title: "${project.name} Tracks"
+  tabs:
+    - name: Track Summary
+      purpose: One row per EB. Entirely read-only for reviewers.
+      header_row: 1
+      frozen_rows: 1
+      frozen_cols: 3
+      key: EBID                      # rows are found by this column; appended, never re-sorted or deleted
+      color_by: Stage                # whole row coloured from stage_colors
+      columns:
+        - {name: EBID,              source: archive.ebid,           width: 90}
+        - {name: SBID,              source: archive.sbid,           width: 90}
+        - {name: Trackname,         source: archive.sdm,            width: 330}
+        - {name: Project,           source: archive.project,        width: 80}
+        - {name: Date,              source: archive.date,           width: 90}
+        - {name: Start (UTC),       source: archive.start,          width: 140}
+        - {name: End (UTC),         source: archive.end,            width: 140}
+        - {name: Duration (min),    source: archive.duration_min,   width: 80}
+        - {name: Configuration,     source: archive.config,         width: 70}
+        - {name: Target,            source: archive.target,         width: 90}
+        - {name: Fields,            source: archive.fields,         width: 220}
+        - {name: On-source (min),   source: archive.on_source_min,  width: 80}
+        - {name: Est. size (GB),    source: archive.est_size_gb,    width: 80}
+        - {name: Archive status,    source: archive.archive_status, width: 90}
+        - {name: Archive link,      source: archive.archive_url,    width: 90, link_text: archive}
+        - {name: Stage,             source: state.stage,            width: 140}
+        - {name: Iteration,         source: state.iteration,        width: 70}
+        - {name: Detail,            source: state.detail,           width: 300}
+        - {name: Updated (UTC),     source: state.updated,          width: 140}
+        - {name: Last job,          source: job.job_id,             width: 80}
+        - {name: Wall time (h),     source: job.wall_h,             width: 80}
+        - {name: Real size (GB),    source: run.sdm_gb,             width: 80}
+        - {name: Peak disk (GB),    source: job.peak_disk_gb,       width: 80}
+        - {name: Reviewer,          source: review.reviewer,        width: 120}
+        - {name: Signed up (UTC),   source: review.signed_up,       width: 140}
+        - {name: Verdict,           source: review.verdict,         width: 110}
+        - {name: Avoid as refant,   source: review.refant_ignore,   width: 100}
+        - {name: QA link,           source: links.qa,               width: 80, link_text: QA}
+        - {name: Flags tab,         source: links.flag_tab,         width: 80, link_text: flags}
+      protection: {mode: whole_tab, editable_columns: []}
+
+    - name: QA Sign-up
+      purpose: >
+        One row per EB, kept across iterations: one reviewer handles every iteration of a track
+        (decision 2026-11-21). Reviewers sign up by typing in QA Reviewer and Email, at any stage;
+        the notification script emails them each time a new iteration of that track reaches
+        AWAITING_REVIEW. Stage shows the controller's raw codes (decision 2026-11-21).
+      header_row: 1
+      frozen_rows: 1
+      frozen_cols: 2
+      key: EBID
+      color_by: Stage
+      columns:
+        - {name: Date,           source: archive.date,     width: 90}
+        - {name: Track Name,     source: archive.sdm,      width: 330}
+        - {name: EBID,           source: archive.ebid,     width: 90}
+        - {name: Target,         source: archive.target,   width: 90}
+        - {name: Configuration,  source: archive.config,   width: 70}
+        - {name: Stage,          source: state.stage,      width: 140}
+        - {name: Iteration,      source: state.iteration,  width: 70}
+        - {name: QA Reviewer,    source: reviewer,         width: 140,
+           note: "Type your name to sign up for this track."}
+        - {name: Email,          source: reviewer,         width: 200,
+           validation: {type: TEXT_IS_EMAIL, strict: false,
+                        help: "The address that gets the 'QA ready' email."}}
+        - {name: QA Server Links, source: links.qa,        width: 90, link_text: QA}
+        - {name: Flags tab,      source: links.flag_tab,   width: 80, link_text: flags}
+        - {name: Notes,          source: reviewer,         width: 250}
+        - name: Email Subject
+          source: formula
+          width: 250
+          formula: >-
+            =IF(AND({{EBID}}<>"", {{Stage}}="AWAITING_REVIEW"),
+            "[${review.email_prefix}] QA ready for "&{{Track Name}}&" (iteration "&{{Iteration}}&")", "")
+        - name: Email Body
+          source: formula
+          width: 300
+          formula: >-
+            =IF({{Email Subject}}="", "",
+            "Hi "&{{QA Reviewer}}&" -- iteration "&{{Iteration}}&" of "&{{Track Name}}&
+            " ("&{{Target}}&", "&{{Configuration}}&" configuration) is ready for QA review."&CHAR(10)&
+            "QA products: "&{{QA Server Links}}&CHAR(10)&
+            "Flags, verdict and refant: "&{{Flags tab}}&CHAR(10)&
+            "QA guide: ${sheets.links.qa_guide}")
+        - {name: Notified iter,  source: script,           width: 80,
+           note: "Last iteration emailed (written by the notification script)."}
+      protection: {mode: whole_tab, editable_columns: [QA Reviewer, Email, Notes]}
+
+flagbook:
+  title: "${project.name} Flags"
+  tab_name: "{config}_{project}_{mjd}_{ebid}"      # e.g. D_20A-346_59786_42455346
+  template_tab: TEMPLATE                            # built from this spec, then duplicated per EB
+  extra_tabs:
+    - name: README
+      text: |
+        One tab per track. Add one row per issue, tick "Apply Row", then set the verdict in M1.
+        RESTART runs the pipeline again with EVERY ticked row (rows from earlier iterations included;
+        untick a row to drop that flag); COMPLETE accepts the track. MANUAL REVIEW and HELP REQUESTED
+        hold the track for the operator, with no rerun, until you set RESTART or COMPLETE.
+        Field names must match the track's fields (dropdown) or be a wildcard such as IC10*.
+        Errors found when your verdict is read appear in M2 and in the "Check" column; the verdict
+        is not used until they are fixed.
+  header_cells:                                     # label cell -> value cell, source
+    - {label: A1, text: "Scheduling Block",   value: E1, source: archive.sdm}
+    - {label: A2, text: "Observation Date",   value: E2, source: archive.date}
+    - {label: A3, text: "Target",             value: E3, source: archive.target}
+    - {label: A4, text: "Configuration",      value: E4, source: archive.config}
+    - {label: G1, text: "Current iteration",  value: H1, source: state.iteration}
+    - {label: G2, text: "QA page",            value: H2, source: links.qa, link_text: QA}
+    - {label: I1, text: "Links"}
+    - {cell: I2, formula: '=HYPERLINK("${sheets.links.qa_guide}", "QA Guide")'}
+    - {cell: J2, formula: '=HYPERLINK("https://casadocs.readthedocs.io/en/latest/notebooks/visibility_data_selection.html", "CASA string syntax guide")'}
+    - {cell: I3, formula: '=HYPERLINK("${sheets.links.flag_rows_help}", "How to add rows")'}
+    - {label: L1, text: "Track status:\n(RESTART / COMPLETE /\nMANUAL REVIEW / HELP REQUESTED)", value: M1, source: reviewer,
+       validation: {type: ONE_OF_LIST, values: [COMPLETE, RESTART, MANUAL REVIEW, HELP REQUESTED], strict: true}}
+    # Verdict -> controller action (decision 2026-11-21): COMPLETE -> pass (DONE), RESTART -> restart
+    # with all ticked rows, MANUAL REVIEW -> manual_review, HELP REQUESTED -> help_requested (both:
+    # HOLD + dashboard item, no rerun; a later COMPLETE/RESTART clears the hold).
+    - {label: L2, text: "Status of your verdict", value: M2, source: review.ack}
+    - {label: N1, text: "Avoid refant?\n(e.g. ea26 or ea26,ea10)", value: O1, source: reviewer,
+       validation: {type: CUSTOM_FORMULA, formula: '=OR(O1="", REGEXMATCH(O1, "^ea\d\d(,ea\d\d)*$"))', strict: true}}
+    - {label: N2, text: "Track completed?",   value: O2, source: review.completed}
+  table:
+    header_row: 5
+    example_row: 6
+    first_row: 7
+    last_row: 150                                   # 20A-346: largest used row 88, most rows in one tab 76
+    hidden_range: "V1:V200"                         # bridge writes the track's field names here (dropdown source)
+    columns:
+      - {col: A, name: MJD,               source: formula, formula: '=IFERROR(VALUE(REGEXEXTRACT($E$1, "\.eb\d+\.(\d+)\.")), "")'}
+      - {col: B, name: SB Name,           source: formula, formula: '=$E$1', hidden: true}
+      - {col: C, name: Obs. Date,         source: formula, formula: '=$E$2'}
+      - {col: D, name: Apply Row,         source: reviewer, validation: {type: BOOLEAN}}
+      - {col: E, name: Issue Description, source: reviewer, width: 250}
+      - {col: F, name: Field Name,        source: reviewer, width: 120,
+         example: "USE THE EXACT NAME OR WILDCARD: 3C138, IC10*, empty = all fields",
+         validation: {type: ONE_OF_RANGE, range: "=$V$1:$V$200", strict: false,
+                      help: "Pick a field of this track, or type a wildcard such as IC10*."}}
+      - {col: G, name: Scan,              source: reviewer, example: "5 | 5,6 | 5~10"}
+      - {col: H, name: SPW,               source: reviewer, example: "3 | 0,1,3 | 3:0~14 | 1~4"}
+      - {col: I, name: Antenna Name,      source: reviewer, example: "ea13 | ea13&ea18"}
+      - {col: J, name: Start Date/Time,   source: reviewer, width: 150, example: "2020/07/26/09:59:22"}
+      - {col: K, name: End Date/Time,     source: reviewer, width: 150, example: "2020/07/26/10:04:00"}
+      - {col: L, name: UVrange,           source: reviewer, example: "0~20klambda"}
+      - {col: M, name: Correlation,       source: reviewer,
+         validation: {type: ONE_OF_LIST, values: ["", LL, RR, "*"], strict: true}}
+      - {col: N, name: Name of QA person, source: reviewer}
+      - {col: O, name: Other Notes,       source: reviewer, width: 200}
+      - {col: P, name: Time string,       source: formula,
+         formula: '=IF({{Apply Row}}, IF(AND({{Start Date/Time}}="", {{End Date/Time}}=""), "", IF({{Start Date/Time}}="", "<"&{{End Date/Time}}, IF({{End Date/Time}}="", ">"&{{Start Date/Time}}, {{Start Date/Time}}&"~"&{{End Date/Time}}))), "")'}
+      - {col: Q, name: Descrip. string,   source: formula,
+         formula: '=IF(AND({{Apply Row}}, LEN(CONCATENATE({{Field Name}}:{{Correlation}}))>0), "[MANUAL] Issue: "&SUBSTITUTE(SUBSTITUTE({{Issue Description}}, "''", ""), """", "")&". Flagged by "&SUBSTITUTE({{Name of QA person}}, "''", ""), "")'}
+      - {col: R, name: Flag string,       source: formula, width: 400,
+         note: "Preview only. The controller rebuilds each command from the raw columns (trackmanager/flagcmds.py).",
+         formula: '=IF({{Descrip. string}}="", "", "mode=''manual''"&IF(OR({{Field Name}}="", {{Field Name}}="*"), "", " field=''"&{{Field Name}}&"''")&IF({{Scan}}="", "", " scan=''"&{{Scan}}&"''")&IF({{SPW}}="", "", " spw=''"&{{SPW}}&"''")&IF({{Antenna Name}}="", "", " antenna=''"&{{Antenna Name}}&"''")&IF({{Time string}}="", "", " timerange=''"&{{Time string}}&"''")&IF({{UVrange}}="", "", " uvrange=''"&{{UVrange}}&"''")&IF(OR({{Correlation}}="", {{Correlation}}="*"), "", " correlation=''"&{{Correlation}}&"''")&" reason=''"&{{Descrip. string}}&"''")'}
+      - {col: S, name: Added in iter,     source: review.added_in_iter, note: "Iteration whose restart first used this row (bridge)."}
+      - {col: T, name: Check,             source: review.row_check, width: 250, note: "Problems found when the verdict was read (bridge)."}
+    conditional_formats:
+      - {range: "J7:K150", color: "#f4cccc", note: "CASA time format YYYY/MM/DD/HH:mm:ss, no decimals",
+         formula: '=AND(J7<>"", NOT(REGEXMATCH(TO_TEXT(J7), "^\d{4}/(0[1-9]|1[0-2])/(0[1-9]|[12]\d|3[01])/([01]\d|2[0-3]):[0-5]\d:[0-5]\d$")))'}
+      - {range: "I7:I150", color: "#f4cccc", note: "antenna names eaNN, with & for baselines",
+         formula: '=AND(I7<>"", NOT(REGEXMATCH(I7, "^ea\d\d(&{1,3}(ea\d\d)?)?(,ea\d\d(&{1,3}(ea\d\d)?)?)*$")))'}
+      - {range: "G7:G150", color: "#f4cccc", note: "scan numbers and ranges",
+         formula: '=AND(G7<>"", NOT(REGEXMATCH(TO_TEXT(G7), "^\d+(~\d+)?(,\d+(~\d+)?)*$")))'}
+      - {range: "A7:T150", color: "#ea9999", note: "formula error anywhere in the row",
+         formula: '=SUMPRODUCT(--ISERROR($A7:$T7))>0'}
+      - {range: "D7:T150", color: "#d9ead3", note: "row applied",
+         formula: '=$D7=TRUE'}
+  protection:
+    mode: whole_tab
+    editable_ranges: ["D7:O150", "M1", "O1"]       # reviewers: the table and the two decision cells

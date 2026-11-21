@@ -1,0 +1,52 @@
+// One controller cycle for one EB: submission, monitoring and recovery.
+// Source of truth: vla_processing/canfar-migration-plan.md §3.3 (idempotency rules).
+// Render: dot -Tsvg attempt_lifecycle.dot -o attempt_lifecycle.svg
+//         dot -Tpng -Gdpi=150 attempt_lifecycle.dot -o attempt_lifecycle.png
+
+digraph attempt_lifecycle {
+  graph [rankdir=TB, fontname="Helvetica", fontsize=13, nodesep=0.35, ranksep=0.4, pad=0.3,
+         label="Attempt lifecycle: one controller cycle for one EB in a worker stage", labelloc=t];
+  node  [shape=box, style="rounded,filled", fillcolor="white", fontname="Helvetica", fontsize=10];
+  edge  [fontname="Helvetica", fontsize=9, color="#555555", arrowsize=0.7];
+
+  start    [label="EB in a worker stage\n(DOWNLOADING, CAL_QUEUED/RUNNING, PROMOTING)", shape=box, fillcolor="#f2f2f2"];
+  live     [label="live attempt\nrecorded?", shape=diamond, fillcolor="#fffdf0"];
+  gate     [label="capacity gates pass?\n(max running, free quota,\ncanfar stats)", shape=diamond, fillcolor="#fffdf0"];
+  waitq    [label="stay queued", fillcolor="#f2f2f2"];
+  write    [label="write attempt_<k>.json\nname <proj>-<eb6>-i<n>-a<k>, request\n(before any API call)", fillcolor="#eaf2fb"];
+  create   [label="Session.create(...)", fillcolor="#eaf2fb"];
+  ids      [label="IDs returned?", shape=diamond, fillcolor="#fffdf0"];
+  record   [label="record IDs in attempt file\nappend job row (submitted)", fillcolor="#eaf2fb"];
+  lookup   [label="look up IDs (else name)\nin this cycle's fetch()", fillcolor="#eaf2fb"];
+  status   [label="status?", shape=diamond, fillcolor="#fffdf0"];
+  wait     [label="wait for next cycle", fillcolor="#f2f2f2"];
+  capture  [label="save info / logs / events\nto logs/attempt_<k>/ now\n(record kept ~1 h)", fillcolor="#eaf2fb"];
+  verify   [label="result.json valid and\nkey outputs present?", shape=diamond, fillcolor="#fffdf0"];
+  advance  [label="advance stage\nupdate job row: completed", fillcolor="#edf7ee"];
+  retry    [label="no live session with the name,\nolder than grace period,\nretries left?", shape=diamond, fillcolor="#fffdf0"];
+  next     [label="open attempt k+1\n(workers skip finished outputs)", fillcolor="#eaf2fb"];
+  failed   [label="FAILED → AWAITING_DECISION\nretry · skip · abort · NEEDS_MANUAL\n(operator, via dashboard)", fillcolor="#fde9e7"];
+
+  start  -> live;
+  live   -> gate    [label="no"];
+  live   -> lookup  [label="yes"];
+  gate   -> waitq   [label="no"];
+  gate   -> write   [label="yes"];
+  write  -> create  -> ids;
+  ids    -> record  [label="yes"];
+  ids    -> lookup  [label="no / error:\nmay still be accepted"];
+  record -> wait;
+  lookup -> status;
+  status -> wait    [label="Pending / Running"];
+  status -> capture [label="terminal"];
+  status -> verify  [label="missing\n(record expired\nor never accepted)"];
+  capture -> verify;
+  verify -> advance [label="yes"];
+  verify -> retry   [label="no"];
+  retry  -> next    [label="yes"];
+  retry  -> failed  [label="no"];
+  next   -> write   [style=dashed];
+
+  note [shape=note, fillcolor="#f7f7f7", style=filled, fontsize=9, label="Never resubmit blindly:\lexit status is not trusted; only verified outputs advance a stage.\lA killed controller rebuilds everything from attempt files,\lthe fetch() list and the outputs on /arc.\l"];
+  { rank=same; failed; note; }
+}

@@ -1,0 +1,92 @@
+// Submission and worker scheme for the CANFAR VLA calibration framework.
+// Source of truth: vla_processing/canfar-migration-plan.md §3 (architecture).
+// Render: dot -Tsvg submission_scheme.dot -o submission_scheme.svg
+//         dot -Tpng -Gdpi=110 submission_scheme.dot -o submission_scheme.png
+//
+// Edge colours show who writes: blue = controller, green = workers,
+// orange = people. Dashed edges are reads or polls.
+
+digraph submission_scheme {
+  graph [rankdir=TB, compound=true, newrank=true, fontname="Helvetica", fontsize=14,
+         nodesep=0.45, ranksep=0.6, pad=0.3, bgcolor="white",
+         label="Submission and worker scheme: controller, CANFAR headless workers, and the track database on /arc\n ",
+         labelloc=t];
+  node  [shape=box, style="rounded,filled", fillcolor="white", fontname="Helvetica", fontsize=10, margin="0.14,0.07"];
+  edge  [fontname="Helvetica", fontsize=9, color="#555555", fontcolor="#333333", arrowsize=0.7];
+
+  // Row 1: people
+  subgraph cluster_people {
+    label="People"; style="rounded,filled"; fillcolor="#fff4e6"; color="#e8a33d"; fontcolor="#8a5a00";
+    operator [label="Operator\ndashboard (notebook session)"];
+    reviewer [label="Reviewers\nGoogle Sheets via bridge\n(not in the MWE)", style="rounded,dashed,filled", fillcolor="#fffaf2"];
+  }
+
+  // Row 2: control files on /arc
+  subgraph cluster_arc_ctl {
+    label="/arc: control files under <root> = /arc/projects/VVINGS/vla-calib/<project>";
+    style="rounded,filled"; fillcolor="#fbf7ee"; color="#a08850"; fontcolor="#6a5520";
+    cfg   [shape=folder, fillcolor="#fffdf7", label="Inputs (operator)\lproject.yaml\lconfig/pipeline/*.cfg\lshared/VLA_antcorr_tables/\l"];
+    inbox [shape=folder, fillcolor="#fff4e6", label="inbox/ (people → controller)\llinks/, approvals/, decisions/\lconsumed + archived by controller\l"];
+    db    [shape=folder, fillcolor="#eaf2fb", label="Track database (controller is the only writer)\lstate/<EB>.json, state/summary.json\levents.jsonl (append-only)\ljobs/jobs.jsonl, jobs/summary.json\lcontroller/lease.json, heartbeat.json\l"];
+  }
+
+  // Row 3: controller
+  subgraph cluster_controller {
+    label="Controller: one headless session (vla-orch image, flexible resources)";
+    style="rounded,filled"; fillcolor="#eaf2fb"; color="#3d7cc9"; fontcolor="#1d4f8f";
+    ctrl [fillcolor="#f5f9fe", fontsize=10, label="Loop every poll_s (300 s):\l  1. read state/, inbox/, project.yaml\l  2. one Session.fetch(kind=\"headless\")\l  3. reconcile live attempts; verify outputs\l  4. apply transitions + capacity gates\l  5. write attempt_<k>.json, then Session.create(), then record IDs\l"];
+    hb   [label="heartbeat + lease\nsingle controller;\nrelaunches a successor every ≤5 d\n(7-day cert, 14-day headless limit)"];
+  }
+
+  // Row 4: CANFAR
+  subgraph cluster_api {
+    label="CANFAR Science Platform (skaha)"; style="rounded,filled"; fillcolor="#f2f2f2"; color="#888888"; fontcolor="#444444";
+    api [label="Session API: create · fetch · info · logs · events\nfinished headless records are kept ~1 h\n(smoke test: record returned 404 after the run)", fillcolor="#fbfbfb"];
+  }
+
+  // Row 5: workers
+  subgraph cluster_workers {
+    label="Worker sessions: headless, one per (EB, stage, attempt), no replicas";
+    style="rounded,filled"; fillcolor="#edf7ee"; color="#4a9a52"; fontcolor="#2a6a31";
+    w_stage [label="stage_local / fetch_raw\nvla-orch, flexible\nunpack NRAO tar or wget → raw/<SDM>"];
+    w_cal   [label="calibrate (+ QA)\nvla-calib, fixed cores / RAM\nxvfb-run casa --pipeline (2 passes) → QAPlotter"];
+    w_prom  [label="promote_science\nvla-orch, flexible\nmv approved splits → science/"];
+    w_rules [shape=note, style="filled", fillcolor="#f7fcf7", fontsize=9,
+             label="Every worker:\l• exits 0 if a valid result.json already exists\l• takes worker.lock (O_EXCL, holds its session ID)\l• tees stdout + CASA logs to /arc as it runs\l• writes via partial names, then renames\l• writes run.json, and result.json last\l"];
+  }
+
+  // Row 6: track data on /arc
+  subgraph cluster_arc_tracks {
+    label="/arc: track data under <root>/tracks/<EB>/";
+    style="rounded,filled"; fillcolor="#fbf7ee"; color="#a08850"; fontcolor="#6a5520";
+    tracks [shape=folder, fillcolor="#edf7ee", label="raw/<SDM>/ + manifest.json\liter_<n>/inputs/  (frozen by controller at submit)\liter_<n>/attempt_<k>.json  (controller)\liter_<n>/logs/attempt_<k>/  (worker logs live; controller adds platform logs)\liter_<n>/work/, products/, run.json, result.json  (worker)\lscience/ + provenance.json  (promote worker)\l"];
+  }
+
+  // People ↔ control files
+  operator -> inbox [color="#e8a33d", label="link paste, approvals,\nHOLD, retry / skip"];
+  reviewer -> inbox [color="#e8a33d", style=dashed, label="verdicts, flags (later)"];
+  db -> operator    [style=dashed, constraint=false, label="dashboard reads state, jobs, logs"];
+
+  // Control files ↔ controller
+  cfg   -> ctrl [style=dashed];
+  inbox -> ctrl [style=dashed, label="consume"];
+  ctrl  -> db   [color="#3d7cc9", label="state, events, job rows"];
+  hb    -> db   [color="#3d7cc9", constraint=false];
+
+  // Controller ↔ CANFAR
+  ctrl -> api [color="#3d7cc9", penwidth=1.6, label="create(name, image, cores, ram, env, cmd)\nfetch() each cycle; info / logs / events at first terminal sighting"];
+  api  -> w_cal [lhead=cluster_workers, penwidth=1.6, label="launches"];
+
+  // Workers ↔ track data
+  w_stage -> tracks [color="#4a9a52", label="raw/<SDM>"];
+  w_cal   -> tracks [color="#4a9a52", penwidth=1.6, label="outputs, live logs,\nrun.json, result.json"];
+  w_prom  -> tracks [color="#4a9a52", label="science/"];
+
+  // Controller ↔ track data (long edges, kept out of the ranking)
+  ctrl   -> tracks [color="#3d7cc9", constraint=false, label="attempt file before create;\ninputs/; platform logs"];
+  tracks -> ctrl   [style=dashed, constraint=false, label="result.json, run.json\n(outputs are the evidence)"];
+
+  // Layout
+  { rank=same; ctrl; hb; }
+  { rank=same; w_stage; w_cal; w_prom; w_rules; }
+}

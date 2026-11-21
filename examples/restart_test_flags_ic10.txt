@@ -1,0 +1,4 @@
+# Manual flagging for track 20A-346.sb42440562.eb42455346.59786.372811249996
+# Config: D
+mode='manual' scan='5' antenna='ea10' reason='MWE_restart_test:ea10_in_phasecal_scan5'
+mode='manual' field='3C48' spw='7' reason='MWE_restart_test:3C48_spw7'
