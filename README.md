@@ -21,7 +21,9 @@ not written yet.
 | Calibrate worker (`workers/calibrate_worker.sh`): stage the SDM, fresh workdir, CASA with cgroup limits, verify, QA | Working; IC10 D test track |
 | Sheets: template spec, Sheets API request builder, flag-command rebuild and checks | Offline only; no bridge to Google yet |
 | Archive sync / `init` / preflight from NRAO TAP | Probe only (`scripts/tap_probe.py`) |
-| `fetch_raw`, `promote_science`, retention, disk-quota gates | Not written |
+| Retention: trim `work/` after each verified run, drop old splits on restart, PROMOTING moves splits and products to `science_dir`/`products_dir`, raw deleted on COMPLETE | Working on the fake backend; not yet on a real track |
+| Project job log (`jobs/jobs.csv`, `jobs.log`, `python -m trackmanager.jobs`) and track log (`state/tracks.csv`) | Working on the fake backend |
+| `fetch_raw`, disk-quota gates | Not written |
 | `project.yaml` loader | Not written; configs are JSON with worker env (`examples/`) |
 | Dashboard | Text status only (`python -m trackmanager.status`) |
 
@@ -35,6 +37,7 @@ trackmanager/        Python package
   worker.py          placeholder worker for tests and scheduler checks
   status.py          text dashboard     decide.py   operator/reviewer decisions -> inbox/
   request.py         add a track to the queue
+  jobs.py            project job log and track log (python -m trackmanager.jobs)
   sheets.py          sheet template -> Sheets API requests, row values, xlsx preview
   flagcmds.py        rebuild and check flag commands from a flag tab's raw columns
   templates/sheets/spec_v1.yaml
@@ -63,6 +66,7 @@ python -m trackmanager.status --root /arc/projects/<space>/<run>
 python -m trackmanager.decide --root <run> --eb <EB> --action restart --flags flags.txt --refant-ignore ea26
 python -m trackmanager.decide --root <run> --eb <EB> --action pass
 python -m trackmanager.request --root <run> --eb <EB> --priority 1
+python -m trackmanager.jobs --root <run> [--eb <EB>] [--status failed] [--csv]
 ```
 
 The controller needs the `canfar` client (`/opt/conda/bin/python` in a CANFAR notebook session
@@ -76,7 +80,8 @@ has it; `scripts/run_controller.sh` installs a pinned copy in headless sessions)
 | `review` | `true`: a verified iteration waits in `AWAITING_REVIEW` for a verdict |
 | `casa_home` | CASA install the workers use; the controller refuses to start if `bin/casa` is missing |
 | `session_prefix` | session-name prefix (default `tm`); also marks this project's workers when counting slots |
-| `auto_retry`, `poll_s`, `grace_s`, `relaunch_after_s`, `retention.drop_prev_iter_work` | see `trackmanager/controller.py` |
+| `retention` | `trim_work`, `drop_prev_iter_work` (both default `true`), `keep_raw_after_done` (`false`), `science_dir`, `products_dir` (default `<root>/science`, `<root>/products`); see `trackmanager/controller.py` |
+| `auto_retry`, `poll_s`, `grace_s`, `relaunch_after_s` | see `trackmanager/controller.py` |
 | `worker.env` | `PIPELINE`, `TAR`, `CASA_WRAPPER`, `QA_DEPS`, `QA_SCRIPT`, optional `VLA_PIPELINE_CONFIG_DIR`, `ANTCORR_DIR` |
 
 ## Related repositories

@@ -8,8 +8,11 @@ worker rules from plan §3.4:
   - writes run.json on exit and result.json last, through partial names.
 
 Environment (set by the controller): TM_ROOT, EB, ITERATION, ATTEMPT, MODE, SLEEP_S.
-Files: tracks/<EB>/iter_<n>/{inputs/, logs/attempt_<k>/, output.txt, result.json};
-worker.lock is per track. result.json lists the inputs/ files it saw, with their sha256.
+Files: tracks/<EB>/raw/sdm.txt (staged once per track, like a real SDM),
+tracks/<EB>/iter_<n>/{inputs/, logs/attempt_<k>/, work/, splits/, products/, output.txt, result.json};
+worker.lock is per track. Like calibrate_worker.sh, it leaves an intermediate file in work/,
+moves its "science splits" to splits/ and its QA products to products/, writes result.json,
+then deletes work/ (TRIM_WORK=0 keeps it). result.json lists the inputs/ files it saw, with their sha256.
 MODE: ok | fail | fail_first (fails on attempt 1 only) | no_result (exits 0 without
 result.json) | oom (allocates memory until the container limit kills it).
 """
@@ -116,6 +119,18 @@ def main():
             say("exiting 0 without writing result.json")
             code = 0
         else:
+            raw = track / "raw"
+            if not (raw / "sdm.txt").exists():
+                raw.mkdir(parents=True, exist_ok=True)
+                (raw / "sdm.txt").write_text(f"placeholder raw data for {eb}\n")
+            work = idir / "work"
+            (work / f"{eb}.ms.split").mkdir(parents=True, exist_ok=True)
+            (work / "intermediate.ms").write_text("full MS, caltables, ...\n")
+            (work / f"{eb}.ms.split" / "table.dat").write_text(f"split of {eb}, iteration {iteration}\n")
+            (idir / "splits").mkdir(exist_ok=True)
+            os.replace(work / f"{eb}.ms.split", idir / "splits" / f"{eb}.ms.split")
+            (idir / "products").mkdir(exist_ok=True)
+            (idir / "products" / "index.html").write_text(f"QA for {eb}, iteration {iteration}\n")
             out = idir / "output.txt"
             tmp = out.with_name("partial-output.txt")
             tmp.write_text(f"placeholder product for {eb}, iteration {iteration}, attempt {attempt}\n")
@@ -124,8 +139,13 @@ def main():
                       for f in sorted((idir / "inputs").glob("*")) if f.is_file()}
             write_atomic(result, {"ok": True, "eb": eb, "iteration": iteration, "attempt": attempt,
                                   "session": session, "inputs": inputs,
-                                  "outputs": ["output.txt"], "finished": iso()})
+                                  "outputs": ["output.txt", f"splits/{eb}.ms.split", "products/index.html"],
+                                  "finished": iso()})
             say("wrote output.txt and result.json")
+            if os.environ.get("TRIM_WORK", "1") != "0":
+                import shutil
+                shutil.rmtree(work, ignore_errors=True)
+                say("deleted work/ (intermediate files)")
             code = 0
     finally:
         run.update(exit_code=code, ended=iso(), wall_s=round(time.time() - started, 1),

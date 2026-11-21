@@ -14,7 +14,12 @@
 #   tracks/<EB>/iter_<n>/logs/attempt_<k>/    stdout.log, run.json, peak_* samples
 #   tracks/<EB>/iter_<n>/work/                CASA working directory (fresh per attempt; old one moved aside)
 #   tracks/<EB>/iter_<n>/products/            renamed out of work/ after CASA; QAPlotter output added here
+#   tracks/<EB>/iter_<n>/splits/              the 4 science split MSs, renamed out of work/
 #   tracks/<EB>/iter_<n>/result.json
+# After result.json, work/ is deleted (full MS, calibrators MSs, caltables, flagversions,
+# pipeline-* dir: ~6.5x the SDM) along with work/products dirs that failed attempts left aside,
+# unless TRIM_WORK=0. CASA's own log files are copied to logs/attempt_<k>/ first. A failed
+# attempt keeps its work/ for diagnosis (the next attempt moves it aside, a verified one deletes it).
 #
 # Env from the controller: TM_ROOT, EB, ITERATION, ATTEMPT. From config (worker.env):
 #   CASA_HOME   CASA install (bin/casa runs the pipeline, bin/python3 runs QAPlotter). Required.
@@ -147,9 +152,10 @@ missing=()
 has_exports || missing+=("products/ export markers")
 compgen -G "pipeline*.context" >/dev/null || missing+=("pipeline*.context")
 [[ -f products/weblog.tgz ]] || missing+=("products/weblog.tgz")
+SPLITS=("$SDM.speclines.ms.split" "$SDM.speclines.ms.split_calibrators" "$SDM.continuum.ms.split" "$SDM.continuum.ms.split_calibrators")
 outs=()
-for s in "$SDM.speclines.ms.split" "$SDM.speclines.ms.split_calibrators" "$SDM.continuum.ms.split" "$SDM.continuum.ms.split_calibrators"; do
-    if [[ -d $s && -n $(ls -A "$s" 2>/dev/null) ]]; then outs+=("work/$s"); else missing+=("$s"); fi
+for s in "${SPLITS[@]}"; do
+    if [[ -d $s && -n $(ls -A "$s" 2>/dev/null) ]]; then outs+=("splits/$s"); else missing+=("$s"); fi
 done
 if (( ${#missing[@]} )); then
     say "verification failed; missing: ${missing[*]}"
@@ -167,6 +173,11 @@ if [[ $qa_rc != 0 || ! -f $IDIR/products/index.html ]]; then
 fi
 outs+=("products/weblog.tgz" "products/index.html")
 
+# --- splits out of work/ (renames), CASA logs kept with the attempt's logs ----------------
+rm -rf "$IDIR/splits"; mkdir -p "$IDIR/splits"
+for s in "${SPLITS[@]}"; do mv "$WORK/$s" "$IDIR/splits/$s" || { say "could not move $s out of work/"; finish 20; }; done
+cp -p "$WORK"/casa-*.log "$LOGDIR/" 2>/dev/null || true
+
 json_outs=$(printf '"%s",' "${outs[@]}"); json_outs="[${json_outs%,}]"
 json_in=""; for f in "${!INPUT_SHA[@]}"; do json_in+="\"$f\": \"${INPUT_SHA[$f]}\", "; done
 printf '{"ok": true, "eb": "%s", "iteration": %s, "attempt": %s, "session": "%s", "sdm": "%s", "inputs": {%s}, "outputs": %s, "qaplotter": "%s", "finished": "%s"}\n' \
@@ -174,4 +185,12 @@ printf '{"ok": true, "eb": "%s", "iteration": %s, "attempt": %s, "session": "%s"
     "$(cat "$QA_DEPS/QAPLOTTER_SHA" 2>/dev/null)" "$(now)" > "$IDIR/partial-result.json"
 mv "$IDIR/partial-result.json" "$IDIR/result.json"
 say "outputs verified, QA written; wrote result.json"
+
+# --- clean up intermediate files (after result.json, so a kill here costs no rerun) -------
+if [[ ${TRIM_WORK:-1} != 0 ]]; then
+    kill "$SAMPLER_PID" 2>/dev/null
+    freed=$(du -sb "$WORK" "$IDIR"/work.stale.* "$IDIR"/products.stale.* 2>/dev/null | awk '{t+=$1} END {print t+0}')
+    rm -rf "$WORK" "$IDIR"/work.stale.* "$IDIR"/products.stale.*
+    say "deleted work/ and stale attempt dirs: $freed bytes freed; kept splits/, products/, inputs/, logs/"
+fi
 finish 0

@@ -14,11 +14,24 @@ Each cycle (plan §3.3) it:
   6. writes state/summary.json and jobs/summary.json, and hands off to a
      successor session when relaunch_after_s has passed.
 
-Stages: QUEUED -> RUNNING -> DONE, or -> AWAITING_DECISION (operator: retry | skip).
-With "review": true, a verified iteration goes to AWAITING_REVIEW instead of DONE; the
-reviewer's decision is "pass" (-> DONE) or "restart" (-> QUEUED as iteration n+1, with the
+Stages: QUEUED -> RUNNING -> PROMOTING -> DONE, or -> AWAITING_DECISION (operator: retry | skip).
+With "review": true, a verified iteration goes to AWAITING_REVIEW instead; the reviewer's
+decision is "pass" (-> PROMOTING -> DONE) or "restart" (-> QUEUED as iteration n+1, with the
 decision's flag and refant files frozen in iter_<n+1>/inputs/). Attempts are numbered within
 an iteration: tracks/<EB>/iter_<n>/attempt_<k>.json.
+
+Retention ("retention" in the config; plan §3.2):
+  trim_work (default true)       after a verified run, delete iter_<n>/work/ (full MS, caltables,
+                                 intermediate tables) and stale work dirs of failed attempts;
+                                 only splits/, products/, inputs/ and logs/ stay. A failed
+                                 attempt's work/ is kept for diagnosis until a later attempt verifies.
+  drop_prev_iter_work (true)     when iteration n+1 starts, delete iteration n's splits/ (and work/).
+  science_dir, products_dir      where PROMOTING moves the approved iteration's splits and its
+                                 products: <dir>/<EB>/ (default <root>/science, <root>/products;
+                                 relative paths are taken from the root). Earlier iterations'
+                                 products stay in tracks/<EB>/iter_<k>/products/.
+  keep_raw_after_done (false)    PROMOTING deletes tracks/<EB>/raw/ unless this is true. Raw data
+                                 stays on disk through every iteration until the track passes.
 Tracks come from the config's "ebs" and from "request" actions in inbox/ (trackmanager.request).
 
 Local run:    python -m trackmanager.controller --config project.json --root <run root>
@@ -39,12 +52,15 @@ import sys
 import time
 from pathlib import Path
 
+from . import jobs as joblog
 from .backend import LIVE, TERMINAL, make_backend
 from .store import (Root, age_s, append_jsonl, create_json, iso, now, parse_iso,
                     read_json, read_jsonl, write_json)
 
 REPO = Path(__file__).resolve().parent.parent
 SETTLED = ("DONE", "SKIPPED", "AWAITING_DECISION", "AWAITING_REVIEW")
+RETENTION_DEFAULTS = {"trim_work": True, "drop_prev_iter_work": True, "keep_raw_after_done": False,
+                      "science_dir": "science", "products_dir": "products"}
 INPUT_FILES = ("manual_flagging.txt", "refant_ignore.txt")  # what a restart may carry
 # Reviewer verdicts (flag-tab M1): COMPLETE -> pass, RESTART -> restart; MANUAL REVIEW and
 # HELP REQUESTED hold the track for the operator (no rerun) until a later pass or restart.
@@ -112,7 +128,7 @@ class Controller:
 
     def job_row(self, eb, n, k, att, **fields):
         ids = att.get("ids") or []
-        append_jsonl(self.r.jobs, {"ts": iso(), "eb": eb, "iteration": n, "attempt": k,
+        append_jsonl(self.r.jobs, {"ts": iso(), "eb": eb, "iteration": n, "attempt": k, "kind": "calibrate",
                                    "name": att["name"], "job_id": ids[0] if ids else None,
                                    "log_dir": str(self.r.logs(eb, n, k)), **fields})
 
@@ -133,6 +149,14 @@ class Controller:
 
     def spec(self, st):
         return next((e for e in self.cfg["ebs"] if e["eb"] == st["eb"]), None) or st.get("spec") or {}
+
+    def retention(self, key):
+        return {**RETENTION_DEFAULTS, **(self.cfg.get("retention") or {})}[key]
+
+    def out_dir(self, key, eb):
+        """science_dir / products_dir for one EB (relative settings are taken from the root)."""
+        base = Path(self.retention(key))
+        return (base if base.is_absolute() else self.r.path / base) / eb
 
     def worker_limit(self):
         """max_workers (or legacy max_running), re-read from the config file every cycle."""
@@ -230,6 +254,8 @@ class Controller:
         for eb, st in states.items():
             if st["stage"] == "RUNNING":
                 self.reconcile(st)
+            elif st["stage"] == "PROMOTING":  # a controller stopped part way through promotion
+                self.promote(st)
         self.schedule(states)
         self.write_summaries(states)
         if not self.settled(states):
@@ -315,6 +341,7 @@ class Controller:
         # install is a project setting ("casa_home"); worker.env or an EB's env may override it.
         if self.cfg.get("casa_home"):
             env["CASA_HOME"] = str(self.cfg["casa_home"])
+        env["TRIM_WORK"] = "1" if self.retention("trim_work") else "0"
         env.update({k: str(v) for k, v in {**w.get("env", {}), **spec.get("env", {})}.items()})
         if w.get("cores"):
             env["OMP_NUM_THREADS"] = str(w["cores"])
@@ -346,16 +373,104 @@ class Controller:
         att["ids"] = ids or None
         att["created_at"] = iso()
         write_json(self.r.attempt(eb, n, k), att)
-        self.job_row(eb, n, k, att, status="submitted" if ids else "submit_unconfirmed")
+        self.job_row(eb, n, k, att, status="submitted" if ids else "submit_unconfirmed",
+                     cores=rq["cores"], ram=rq["ram"], image=rq["image"])
 
     def drop_previous_work(self, eb, prev):
-        """retention.drop_prev_iter_work: delete iter_<prev>/work once its products are kept."""
-        if not (self.cfg.get("retention") or {}).get("drop_prev_iter_work"):
+        """retention.drop_prev_iter_work: a restart replaces iteration <prev>, so its splits/ and
+        any work/ go; its products/, inputs/, logs/ and review.json stay as the record."""
+        if not self.retention("drop_prev_iter_work"):
             return
-        work, res = self.r.iter_dir(eb, prev) / "work", read_json(self.r.result(eb, prev))
-        if work.exists() and res and res.get("ok") and (self.r.iter_dir(eb, prev) / "products").is_dir():
-            shutil.rmtree(work, ignore_errors=True)
-            self.event(eb, "retention", "dropped", f"iter_{prev}/work deleted (products kept)")
+        idir, res = self.r.iter_dir(eb, prev), read_json(self.r.result(eb, prev))
+        if not (res and res.get("ok") and (idir / "products").is_dir()):
+            return
+        gone = [d.name for d in self.intermediate_dirs(idir) + [idir / "splits"] if d.exists()]
+        for name in gone:
+            shutil.rmtree(idir / name, ignore_errors=True)
+        if gone:
+            self.event(eb, "retention", "dropped", f"iter_{prev}: deleted {', '.join(gone)} "
+                       "(replaced by a restart; products kept)")
+
+    @staticmethod
+    def intermediate_dirs(idir):
+        """work/ plus work and products dirs that failed attempts left aside (*.stale.*)."""
+        return [idir / "work"] + sorted(idir.glob("work.stale.*")) + sorted(idir.glob("products.stale.*"))
+
+    def trim_work(self, eb, n):
+        """retention.trim_work, after a verified run. The worker trims too; this catches a worker
+        that was killed after writing result.json and covers older workers."""
+        if not self.retention("trim_work"):
+            return
+        idir = self.r.iter_dir(eb, n)
+        gone = [d.name for d in self.intermediate_dirs(idir) if d.exists()]
+        for name in gone:
+            shutil.rmtree(idir / name, ignore_errors=True)
+        if gone:
+            self.event(eb, "retention", "trimmed", f"iter_{n}: deleted {', '.join(gone)}")
+
+    def promote(self, st):
+        """PROMOTING -> DONE: move the approved iteration's splits to science_dir/<EB>/ and its
+        products to products_dir/<EB>/, write provenance.json, then delete raw/ (unless
+        keep_raw_after_done). Every step is a rename or a check, so a controller killed part way
+        repeats it safely on the next cycle. Conflicts go to AWAITING_DECISION."""
+        eb, n = st["eb"], st.get("iteration", 1)
+        idir, res = self.r.iter_dir(eb, n), read_json(self.r.result(eb, n)) or {}
+        sci, prod = self.out_dir("science_dir", eb), self.out_dir("products_dir", eb)
+        try:
+            sci.mkdir(parents=True, exist_ok=True)
+            moved = []
+            for src in sorted((idir / "splits").glob("*")) if (idir / "splits").is_dir() else []:
+                if (sci / src.name).exists():
+                    raise FileExistsError(f"{sci / src.name} already exists")
+                shutil.move(str(src), str(sci / src.name))
+                moved.append(src.name)
+            if (idir / "splits").is_dir() and not any((idir / "splits").iterdir()):
+                (idir / "splits").rmdir()
+            splits = sorted(p.name for p in sci.iterdir() if p.name != "provenance.json")
+            if not splits:
+                raise FileNotFoundError(f"no splits in {idir / 'splits'} or {sci}")
+            if (idir / "products").is_dir():
+                if prod.exists():
+                    raise FileExistsError(f"{prod} already exists")
+                prod.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(idir / "products"), str(prod))
+            elif not prod.is_dir():
+                raise FileNotFoundError(f"no products in {idir / 'products'} or {prod}")
+            review = read_json(self.r.review(eb, n)) or {}
+            prov = {"eb": eb, "iteration": n, "sdm": res.get("sdm"), "splits": splits,
+                    "products": str(prod), "inputs_sha256": res.get("inputs", {}),
+                    "inputs_dir": str(self.r.inputs(eb, n)), "reviewer": review.get("by"),
+                    "verdict_at": review.get("decided") or review.get("applied"),
+                    "worker_session": res.get("session"), "qaplotter": res.get("qaplotter"),
+                    "track_db": str(self.r.track(eb)), "promoted": iso(), "controller": self.me}
+            write_json(sci / "provenance.json", prov)
+            write_json(prod / "provenance.json", prov)
+            for name in INPUT_FILES:  # the reviewer flags that made this calibration
+                if (self.r.inputs(eb, n) / name).exists() and not (prod / name).exists():
+                    shutil.copy2(self.r.inputs(eb, n) / name, prod / name)
+        except OSError as e:
+            self.set_stage(st, "AWAITING_DECISION", f"promotion of iteration {n} failed: {e}")
+            return
+        if moved:
+            self.event(eb, "retention", "promoted", f"iter_{n}: {len(moved)} split(s) -> {sci}; products -> {prod}")
+        self.trim_work(eb, n)
+        raw = self.r.track(eb) / "raw"
+        if not self.retention("keep_raw_after_done") and (raw.exists() or raw.is_symlink()):
+            if raw.is_symlink():
+                raw.unlink()  # never follow a link into the operator's own data
+            else:
+                shutil.rmtree(raw, ignore_errors=True)  # rmtree does not follow links inside raw/
+            self.event(eb, "retention", "raw_deleted", "raw data deleted after the track passed")
+        raw_gone = not (raw.exists() or raw.is_symlink())
+        st.update(science_dir=str(sci), products_dir=str(prod), completed_iteration=n,
+                  completed_attempt=st.get("attempt"), completed_by=prov["reviewer"],
+                  completed_at=st.get("completed_at") or iso(),
+                  raw_deleted_at=(st.get("raw_deleted_at") or iso()) if raw_gone else None)
+        k = st.get("attempt") or 0
+        att = read_json(self.r.attempt(eb, n, k)) if k else None
+        if att:
+            self.job_row(eb, n, k, att, promoted=st["completed_at"])
+        self.set_stage(st, "DONE", f"iteration {n} promoted to {sci}")
 
     # ---- monitoring and verification ------------------------------------
     def reconcile(self, st):
@@ -427,9 +542,12 @@ class Controller:
             att["outcome"] = "completed"
             write_json(self.r.attempt(eb, n, k), att)
             self.job_row(eb, n, k, att, status="verified", failure_class="none", **common)
-            to = "AWAITING_REVIEW" if self.cfg.get("review") else "DONE"
+            self.trim_work(eb, n)
+            to = "AWAITING_REVIEW" if self.cfg.get("review") else "PROMOTING"
             self.set_stage(st, to, f"iteration {n} attempt {k} verified "
                                    f"(platform: {common['platform_status']})")
+            if to == "PROMOTING":
+                self.promote(st)
             return
         text = ""
         for f in ("events.txt", "session_info.json", "session.log"):
@@ -498,6 +616,10 @@ class Controller:
             return f"ignored: unknown input files {bad} (allowed: {list(INPUT_FILES)})"
         review = {"iteration": n, "verdict": d["action"], "by": by, "decided": d.get("ts"),
                   "applied": iso(), "notes": d.get("notes", ""), "inputs_next": sorted(inputs)}
+        k = st.get("attempt") or 0
+        att = read_json(self.r.attempt(eb, n, k)) if k else None
+        if att:  # the job log shows which job's output each verdict was about
+            self.job_row(eb, n, k, att, verdict=d["action"], verdict_at=review["applied"])
         if d["action"] in ("manual_review", "help_requested"):
             history = (read_json(self.r.review(eb, n)) or {}).get("history", [])
             write_json(self.r.review(eb, n), {**review, "history": history + [review]})
@@ -511,7 +633,8 @@ class Controller:
         if st.get("hold_reason") in ("manual_review", "help_requested"):
             st.update(hold=False, hold_reason=None)  # the reviewer has now decided
         if d["action"] == "pass":
-            self.set_stage(st, "DONE", f"iteration {n} passed review ({by})")
+            self.set_stage(st, "PROMOTING", f"iteration {n} passed review ({by})")
+            self.promote(st)
             return "applied"
         nxt = self.r.inputs(eb, n + 1)
         nxt.mkdir(parents=True, exist_ok=True)
@@ -532,11 +655,8 @@ class Controller:
                                                  ("stage", "iteration", "attempt", "detail", "updated", "hold",
                                                   "hold_reason", "queued_at", "queue_position")}
                                             for eb, st in states.items()}})
-        latest = {}
-        for row in read_jsonl(self.r.jobs):
-            key = f"{row['eb']}#i{row.get('iteration', 1)}a{row['attempt']}"
-            latest[key] = {**latest.get(key, {}), **{k: v for k, v in row.items() if v is not None}}
-        write_json(self.r.jobs_summary, latest)
+        jobs = joblog.write_views(self.r, self.cfg.get("name", ""), iso())
+        joblog.write_track_views(self.r, states, jobs, self.cfg.get("name", ""), iso())
 
     def maybe_handoff(self):
         after = self.cfg.get("relaunch_after_s")
@@ -571,6 +691,10 @@ class Controller:
         except Exception as e:
             log(f"successor create failed: {e!r}")
             return
+        append_jsonl(self.r.jobs, {"ts": iso(), "kind": "controller", "eb": "-", "name": name,
+                                   "job_id": ids[0] if ids else None, "image": c["image"],
+                                   "status": "submitted" if ids else "submit_unconfirmed",
+                                   "log_dir": str(self.r.path / "controller")})
         if ids:
             lease.update(handoff_to=ids[0], handoff_at=iso())
             write_json(self.r.lease, lease)

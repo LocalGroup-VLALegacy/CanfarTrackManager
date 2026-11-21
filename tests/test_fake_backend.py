@@ -48,7 +48,7 @@ def stages(root):
 
 def submissions(root):
     return [r for r in read_jsonl(root / "jobs" / "jobs.jsonl")
-            if r["status"] in ("submitted", "submit_unconfirmed")]
+            if r.get("status") in ("submitted", "submit_unconfirmed") and r.get("kind") != "controller"]
 
 
 def test_happy_and_failure_paths(tmp_path):
@@ -140,6 +140,8 @@ def test_handoff_to_successor(tmp_path):
     assert "handoff_requested" in to and to.count("held") >= 2
     assert stages(root) == {"long": "DONE"}
     assert len(submissions(root)) == 1
+    log = (root / "jobs" / "jobs.csv").read_text()
+    assert "controller" in log and "tmrun-ctrl-" in log  # successors are in the project job log
 
 
 def test_pending_successor_is_cancelled_on_finish(tmp_path):
@@ -260,11 +262,39 @@ def test_review_restart_then_pass(tmp_path):
     assert rev["verdict"] == "restart" and rev["notes"] == "RFI"
     archived = {d["action"]: d["result"] for d in map(read_json, (root / "inbox" / "archive").glob("*.json"))}
     assert archived["restart"] == "applied" and archived["pass"].startswith("ignored: decision for iteration 1")
-    assert (root / "tracks" / "trk" / "iter_1" / "output.txt").exists()  # iteration 1 kept
+    i1 = root / "tracks" / "trk" / "iter_1"
+    assert (i1 / "output.txt").exists() and (i1 / "products" / "index.html").exists()  # record kept
+    assert not (i1 / "splits").exists() and not (i1 / "work").exists()  # replaced by iteration 2
+    assert (root / "tracks" / "trk" / "raw" / "sdm.txt").exists()  # raw stays until the track passes
     decide(root, "--eb", "trk", "--action", "pass")
     controller(cfg, root)
     assert stages(root) == {"trk": "DONE"}
     assert read_json(i2 / "review.json")["verdict"] == "pass"
+    sci, prod = root / "science" / "trk", root / "products" / "trk"
+    assert (sci / "trk.ms.split" / "table.dat").read_text() == "split of trk, iteration 2\n"
+    assert (prod / "index.html").read_text() == "QA for trk, iteration 2\n"
+    assert (prod / "manual_flagging.txt").read_text() == flags.read_text()
+    prov = read_json(sci / "provenance.json")
+    assert prov["iteration"] == 2 and prov["splits"] == ["trk.ms.split"]
+    assert set(prov["inputs_sha256"]) == {"manual_flagging.txt", "refant_ignore.txt"}
+    assert not (root / "tracks" / "trk" / "raw").exists()  # deleted once the track passed
+    assert not (i2 / "splits").exists() and not (i2 / "products").exists()
+    assert (i1 / "products" / "index.html").exists()  # earlier iterations' QA stays in the track db
+    st = read_json(root / "state" / "trk.json")
+    assert st["science_dir"] == str(sci) and st["completed_iteration"] == 2 and st["raw_deleted_at"]
+    # Project job log: one row per job, with the verdict on its output and the promoted one marked.
+    import csv
+    jobs = {(r["iteration"], r["attempt"]): r for r in csv.DictReader(open(root / "jobs" / "jobs.csv"))}
+    assert set(jobs) == {("1", "1"), ("2", "1")}
+    assert jobs[("1", "1")]["verdict"] == "restart" and not jobs[("1", "1")]["promoted"]
+    assert jobs[("2", "1")]["verdict"] == "pass" and jobs[("2", "1")]["promoted"] == st["completed_at"]
+    assert all(r["outcome"] == "verified" and r["eb"] == "trk" and r["submitted"] for r in jobs.values())
+    assert "tmrun-trk-i2-a1" not in (root / "jobs" / "jobs.log").read_text()  # session name is in csv
+    tracks = list(csv.DictReader(open(root / "state" / "tracks.csv")))
+    assert [(t["eb"], t["stage"], t["jobs"], t["completed_iteration"]) for t in tracks] == [("trk", "DONE", "2", "2")]
+    r = subprocess.run([sys.executable, "-m", "trackmanager.jobs", "--root", str(root), "--status", "verified"],
+                       cwd=SKEL, capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.count("\ntrk") == 0 and len(r.stdout.splitlines()) == 3
     names = [r["name"] for r in submissions(root)]
     assert names == ["tmrun-trk-i1-a1", "tmrun-trk-i2-a1"]
 
@@ -284,3 +314,41 @@ def test_manual_review_and_help_hold_without_rerun(tmp_path):
     assert st["stage"] == "DONE" and not st["hold"]
     rev = read_json(root / "tracks" / "m" / "iter_1" / "review.json")
     assert [h["verdict"] for h in rev["history"]] == ["help_requested", "manual_review", "pass"]
+
+
+def test_retention_trim_and_promotion_without_review(tmp_path):
+    cfg, root = setup(tmp_path, [{"eb": "a", "mode": "ok", "sleep_s": 1},
+                                 {"eb": "b", "mode": "ok", "sleep_s": 1, "env": {"TRIM_WORK": "0"}}],
+                      retention={"science_dir": str(tmp_path / "calibrated" / "science"),
+                                 "products_dir": "qa_products", "keep_raw_after_done": True})
+    controller(cfg, root)
+    assert stages(root) == {"a": "DONE", "b": "DONE"}
+    for eb in ("a", "b"):
+        idir = root / "tracks" / eb / "iter_1"
+        # b's worker kept work/ (TRIM_WORK=0); the controller trims it after verification.
+        assert not (idir / "work").exists() and (idir / "logs" / "attempt_1" / "run.json").exists()
+        assert (tmp_path / "calibrated" / "science" / eb / f"{eb}.ms.split").is_dir()  # absolute setting
+        assert (root / "qa_products" / eb / "index.html").exists()  # relative to the root
+        assert (root / "tracks" / eb / "raw" / "sdm.txt").exists()  # keep_raw_after_done
+    trimmed = [e for e in read_jsonl(root / "events.jsonl") if e["to"] == "trimmed"]
+    assert [e["eb"] for e in trimmed] == ["b"]
+
+
+def test_promotion_conflict_waits_for_operator_and_resumes(tmp_path):
+    cfg, root = setup(tmp_path, [{"eb": "c", "mode": "ok", "sleep_s": 1}])
+    clash = root / "science" / "c" / "c.ms.split"
+    clash.mkdir(parents=True)  # an older copy the operator must look at
+    controller(cfg, root)
+    st = read_json(root / "state" / "c.json")
+    assert st["stage"] == "AWAITING_DECISION" and "already exists" in st["detail"]
+    assert (root / "tracks" / "c" / "iter_1" / "splits" / "c.ms.split").is_dir()  # nothing lost
+    assert (root / "tracks" / "c" / "raw" / "sdm.txt").exists()
+    # Operator moves the old copy away and puts the track back to PROMOTING (as the dashboard will).
+    clash.rename(tmp_path / "old-c.ms.split")
+    st["stage"] = "PROMOTING"
+    (root / "state" / "c.json").write_text(json.dumps(st))
+    controller(cfg, root)
+    assert stages(root) == {"c": "DONE"}
+    assert (root / "science" / "c" / "c.ms.split" / "table.dat").exists()
+    assert not (root / "tracks" / "c" / "raw").exists()
+    assert len(submissions(root)) == 1  # promotion never resubmits

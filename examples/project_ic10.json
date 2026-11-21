@@ -8,7 +8,11 @@
  "relaunch_after_s": null,
  "casa_home": "/arc/home/ekoch/casa-6.6.6-18-pipeline-2025.1.0.37-py3.10.el8",
  "retention": {
-  "drop_prev_iter_work": false
+  "trim_work": true,
+  "drop_prev_iter_work": true,
+  "keep_raw_after_done": false,
+  "science_dir": "science",
+  "products_dir": "products"
  },
  "worker": {
   "image": "images.canfar.net/casa-6/casa:6.6.1-17-pipeline",
