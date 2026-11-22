@@ -36,9 +36,9 @@
    "PIPELINE": "/arc/home/ekoch/vla_processing/ReductionPipeline",
    "CASA_WRAPPER": "/arc/home/ekoch/vla_processing/CanfarTrackManager/casa/casa_with_limits.sh",
    "SDM_MODE": "link",
-   "QA_DEPS": "/arc/projects/VVINGS/vla-calib-mwe/skeleton/.qadeps/casa-6.6.6-18-py3.10",
+   "QA_DEPS": "/arc/projects/VVINGS/shared/qadeps/casa-6.6.6-18-py3.10",
    "QA_SCRIPT": "/arc/home/ekoch/vla_processing/CanfarTrackManager/qa/run_qa.sh",
-   "VLA_PIPELINE_CONFIG_DIR": "/arc/projects/VVINGS/vla-calib-mwe/runs/ic10/config/pipeline"
+   "VLA_PIPELINE_CONFIG_DIR": "/arc/projects/VVINGS/vla-calib-mwe/config/ic10/pipeline"
   }
  }
 }

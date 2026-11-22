@@ -8,7 +8,7 @@ its own project config.
 
 It replaces AutoDataIngest (VM + Globus + SSH + Slurm on Fir) for work on CANFAR. Design and
 decisions: `~/vla_processing/canfar-migration-plan.md`. The experiments that tested this design on
-the real scheduler, and their results, are in `/arc/projects/VVINGS/vla-calib-mwe/README.md`.
+the real scheduler, and their results, are in `/arc/projects/VVINGS/vla-calib-mwe/docs/archive/walking-skeleton-record-2026-11.md`.
 
 **Status: 0.1, early.** The core has run on the real scheduler; several stages in the plan are
 not written yet.
