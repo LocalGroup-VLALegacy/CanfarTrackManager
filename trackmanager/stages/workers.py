@@ -27,7 +27,8 @@ class Attempt:
         ctl.job_row(self.eb, self.iteration, self.attempt, att, **{**extra, **fields})
 
 
-OOM_FRACTION = 0.8      # a killed worker whose last memory sample was this close to its request ran out of memory
+OOM_FRACTION = 0.7      # a killed worker whose last memory sample reached this share of its request ran out of memory
+#                         (the real kill of 2026-11-22 was last sampled at 0.76: samples lag the final allocation)
 
 
 def peak_anon(a: Attempt):

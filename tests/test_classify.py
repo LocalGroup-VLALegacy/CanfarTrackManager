@@ -8,8 +8,9 @@ GIB = 2**30
 
 def test_oom_is_inferred_from_the_workers_last_memory_sample_when_the_platform_says_nothing():
     quiet = "Normal Scheduled ... Normal Started container ..."          # what the real events looked like
+    assert classify("Failed", {}, quiet, peak_anon_bytes=812339200, ram_gb=1) == "oom"      # the real kill: 775 MiB of 1 GiB
     assert classify("Failed", {}, quiet, peak_anon_bytes=int(0.85 * GIB), ram_gb=1) == "oom"
-    assert classify("Failed", {}, quiet, peak_anon_bytes=int(0.5 * GIB), ram_gb=1) == "failed"
+    assert classify("Failed", {}, quiet, peak_anon_bytes=int(0.5 * GIB), ram_gb=1) == "failed"      # lots of headroom: not memory
     assert classify("Failed", {}, quiet, peak_anon_bytes=None, ram_gb=1) == "failed"
     assert classify("Failed", {}, quiet, peak_anon_bytes=GIB, ram_gb=None) == "failed"      # flexible request
 
