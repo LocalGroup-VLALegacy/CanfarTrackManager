@@ -83,3 +83,20 @@ def test_shared_admit_gate_leaves_a_track_queued_with_its_reason():
     p = plan([tr("big"), tr("small", queued_at="2026-01-02T00:00:00Z")], lim(5), admit=admit)
     assert ebs(p.submit) == ["small"]            # the big track does not block the small one
     assert p.waiting["big"] == {"position": 1, "blocked_by": "disk: 4.1 TB needed, 3.0 TB free"}
+
+
+def test_stage_and_calibrate_sessions_share_max_sessions_but_not_per_kind_slots():
+    states = [tr("s1", S.STAGING), tr("s2", S.STAGING), tr("c1"), tr("c2", queued_at="2026-01-02T00:00:00Z"),
+              tr("r", S.CALIBRATING, S.RUNNING)]
+    p = plan(states, lim(calibrate=2, stage=2, total=3))
+    # r runs (1 of 3 sessions). Queue order is c1, s1, s2, c2: c1 and s1 fit; s2 hits the shared
+    # cap; c2 hits the calibrate cap (r + c1) before the shared one is looked at.
+    assert ebs(p.submit) == ["c1", "s1"]
+    assert p.waiting == {"s2": {"position": 1, "blocked_by": "max_sessions (3/3)"},
+                         "c2": {"position": 2, "blocked_by": "max_workers.calibrate (2/2)"}}
+    assert p.in_use == {"stage": 1, "calibrate": 2} and p.total_in_use == 3
+
+
+def test_orphan_stage_sessions_take_stage_slots_only():
+    p = plan([tr("s1", S.STAGING), tr("c1")], lim(calibrate=1, stage=1), orphans={"stage": 1})
+    assert ebs(p.submit) == ["c1"] and p.waiting["s1"]["blocked_by"] == "max_workers.stage (1/1)"
