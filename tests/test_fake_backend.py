@@ -18,20 +18,15 @@ SKEL = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKEL))
 from trackmanager.store import read_json, read_jsonl  # noqa: E402
 
-BASE = {"name": "t", "poll_s": 1, "grace_s": 6, "auto_retry": 1, "max_running": 4,
-        "relaunch_after_s": None,
-        "worker": {"image": "local", "cmd": sys.executable, "cores": None, "ram": None},
-        "controller": {"image": "local"}}
+from helpers import make_project  # noqa: E402
 
 
 def setup(tmp_path, ebs, **over):
-    cfg = {**BASE, **over, "ebs": ebs}
-    (tmp_path / "cfg.json").write_text(json.dumps(cfg))
-    return tmp_path / "cfg.json", tmp_path / "run"
+    return make_project(tmp_path, ebs, **over)
 
 
 def controller(cfg, root, *extra, env=None, wait=True, timeout=90):
-    cmd = [sys.executable, "-m", "trackmanager.controller", "--config", str(cfg), "--root", str(root),
+    cmd = [sys.executable, "-m", "trackmanager.controller", "--project", str(cfg), "--root", str(root),
            "--backend", "fake", *extra]
     p = subprocess.Popen(cmd, cwd=SKEL, env={**os.environ, **(env or {})},
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -158,13 +153,14 @@ def test_pending_successor_is_cancelled_on_finish(tmp_path):
 
 
 def max_concurrent(root):
-    """Replay events.jsonl: the most tracks in RUNNING at once, and the order they started."""
+    """Replay events.jsonl: the most tracks running a calibrate worker at once, and the order
+    they started."""
     running, peak, order = set(), 0, []
     for e in read_jsonl(root / "events.jsonl"):
-        if e["to"] == "RUNNING" and e["from"] == "QUEUED":
+        if e.get("from_activity") == "queued" and e.get("activity") == "running":
             running.add(e["eb"])
             order.append(e["eb"])
-        elif e["from"] == "RUNNING" and e["to"] != "RUNNING":
+        elif e.get("from_activity") == "running" and e.get("activity") != "running":
             running.discard(e["eb"])
         peak = max(peak, len(running))
     return peak, order
@@ -184,7 +180,7 @@ def test_worker_limit_holds_extra_tracks_in_queue(tmp_path):
     p.communicate(timeout=90)
     assert queued_seen and queued_seen["workers"]["limit"] == 2 and queued_seen["workers"]["in_use"] == 2
     positions = sorted(st["queue_position"] for st in queued_seen["ebs"].values()
-                       if st["stage"] == "QUEUED")
+                       if st.get("activity") == "queued")
     assert positions == list(range(1, queued_seen["workers"]["queued"] + 1))
     assert set(stages(root).values()) == {"DONE"}
     peak, order = max_concurrent(root)
@@ -364,19 +360,22 @@ def test_promotion_conflict_waits_for_operator_and_resumes(tmp_path):
 def test_qa_links_and_group_read(tmp_path):
     import grp
     import shutil as sh
+    from trackmanager import qa
     from trackmanager.controller import Controller
     group = grp.getgrgid(os.getgid()).gr_name
-    c = Controller({**BASE, "ebs": [], "qa": {"group": group}}, tmp_path / "run", backend=None, me="t")
-    assert c.qa_url("/arc/projects/X/calibrated/products/eb1/iter_2/index.html") == \
+    from trackmanager import config as projconfig
+    path, root = make_project(tmp_path, [], qa={"group": group})
+    c = Controller(projconfig.load(path, check_paths=False), root, backend=None, me="t")
+    assert qa.qa_url(c, "/arc/projects/X/calibrated/products/eb1/iter_2/index.html") == \
         "https://ws-uv.canfar.net/arc/files/projects/X/calibrated/products/eb1/iter_2/index.html"
-    assert c.qa_url(tmp_path / "index.html") is None  # not on /arc: no browser link
-    assert c.qa_dir("eb1", 2) == tmp_path / "run" / "products" / "eb1" / "iter_2"
+    assert qa.qa_url(c, tmp_path / "index.html") is None  # not on /arc: no browser link
+    assert qa.qa_dir(c, "eb1", 2) == tmp_path / "run" / "products" / "eb1" / "iter_2"
     if not sh.which("setfacl"):
         pytest.skip("no setfacl")
-    qd = c.qa_dir("eb1", 2)
+    qd = qa.qa_dir(c, "eb1", 2)
     (qd / "sub").mkdir(parents=True)
     (qd / "sub" / "p.html").write_text("x")
-    assert c.grant_qa_read(qd)
+    assert qa.grant_qa_read(c, qd)
     (qd / "later.html").write_text("y")  # inherits the default entry
     for f in (qd, qd / "sub" / "p.html", qd / "later.html"):
         out = subprocess.run(["getfacl", "-p", str(f)], capture_output=True, text=True).stdout

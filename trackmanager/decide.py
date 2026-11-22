@@ -4,7 +4,8 @@
     python -m trackmanager.decide --root ../runs/r1 --eb X --action restart \\
         --flags my_flags.txt --refant-ignore ea26 --notes "RFI in scan 5"
     python -m trackmanager.decide --root ../runs/r1 --eb X --action pass
-Actions: retry | skip (only applied in AWAITING_DECISION), hold | release (any stage),
+Actions: retry | skip | needs_manual (only applied in AWAITING_DECISION; skip also in
+AWAITING_DATA), hold | release (any stage),
 pass | restart | manual_review | help_requested (only applied in AWAITING_REVIEW, and only
 to the iteration it names; by default the track's current iteration, read from state/).
 manual_review and help_requested put the track on HOLD for the operator, with no rerun. A restart carries the full text
@@ -23,7 +24,7 @@ def main(argv=None):
     p.add_argument("--root", required=True)
     p.add_argument("--eb", required=True)
     p.add_argument("--action", required=True,
-                   choices=["retry", "skip", "hold", "release", "pass", "restart",
+                   choices=["retry", "skip", "needs_manual", "hold", "release", "pass", "restart",
                             "manual_review", "help_requested"])
     p.add_argument("--iteration", type=int, help="iteration the verdict is for (default: current)")
     p.add_argument("--flags", type=Path, help="manual_flagging.txt for the next iteration (restart)")
@@ -39,6 +40,7 @@ def main(argv=None):
     if a.action in ("pass", "restart", "manual_review", "help_requested"):
         st = read_json(r.state(a.eb)) or {}
         d["iteration"] = a.iteration or st.get("iteration", 1)
+    if a.notes or a.action in ("pass", "restart", "manual_review", "help_requested"):
         d["notes"] = a.notes
     if a.action == "restart":
         inputs = {}

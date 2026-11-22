@@ -32,10 +32,12 @@ def main(argv=None):
               f"{w.get('queued')} queued, {w.get('held')} held")
     summ = full.get("ebs", {})
     wid = max([14] + [len(eb) + 2 for eb in summ])
-    print(f"\n{'EB':<{wid}}{'stage':<19}{'iter':>4}{'att':>4}  {'hold':<5}{'queue':>6}  detail")
+    print(f"\n{'EB':<{wid}}{'stage':<24}{'iter':>4}{'att':>4}  {'hold':<5}{'queue':>6}  detail")
     for eb, st in sorted(summ.items(), key=lambda kv: (kv[1].get("queue_position") or 0, kv[0])):
-        print(f"{eb:<{wid}}{st['stage']:<19}{st.get('iteration') or 1:>4}{st['attempt']:>4}  {str(bool(st.get('hold'))):<5}"
-              f"{str(st.get('queue_position') or ''):>6}  {st.get('detail')}")
+        stage = st["stage"] + ("/" + st["activity"] if st.get("activity") else "")
+        blocked = f" [blocked by {st['blocked_by']}]" if st.get("blocked_by") else ""
+        print(f"{eb:<{wid}}{stage:<24}{st.get('iteration') or 1:>4}{st['attempt']:>4}  "
+              f"{str(bool(st.get('hold'))):<5}{str(st.get('queue_position') or ''):>6}  {st.get('detail')}{blocked}")
 
     jobs = read_json(r.jobs_summary, {})
     jw = max([18] + [len(k) + 2 for k in jobs])

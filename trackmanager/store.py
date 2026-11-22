@@ -20,6 +20,10 @@ def iso(t: dt.datetime | None = None) -> str:
     return (t or now()).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def log(msg):
+    print(f"{iso()} {msg}", flush=True)
+
+
 def parse_iso(s: str) -> dt.datetime:
     return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
 

@@ -1,0 +1,90 @@
+# Annotated starter project.yaml (plan §3.1). Copy it, edit the <placeholders>, then check it:
+#   python -m trackmanager.config project.yaml --check
+# Relative paths are taken from project.root. Blocks marked (M2)/(M4) are validated but not
+# used until archive sync / the Sheets bridge exist.
+
+project:
+  name: <project-name>
+  vla_project_codes: [<20A-346>]            # one or more VLA project codes (M2)
+  root: /arc/projects/<space>/vla-calib/<project-name>   # the track database lives here
+  group: <space>                            # operators' CADC group (documentation only)
+  session_prefix: tm                        # prefix of every session this project submits; unique per project space
+
+inputs:
+  source: arc_path                          # nrao_link | arc_path (SDM directory or NRAO tar)
+  eb_list: archive                          # archive | file:<csv>
+
+archive:                                    # (M2)
+  tap_url: https://data-query.nrao.edu/tap
+  poll_h: 24
+  bands_ghz: [[1.0, 2.0]]                   # keep only EBs overlapping these ranges
+  cones: []                                 # {name, ra_deg, dec_deg, radius_deg}: candidates only
+  include_ebs: []
+  exclude_ebs: []
+  min_duration_min: 30
+  size_calibration: 1.0                     # TAP estimate -> real SDM size
+
+pipeline:
+  image: images.canfar.net/<harbor>/vla-calib:<tag>      # recorded in the job log
+  script: lband_pipeline/lband_reduction_pipeline.py
+  casa_passes: 2
+  repo: /arc/home/<user>/vla_processing/ReductionPipeline   # ReductionPipeline checkout
+  source_configs: config/pipeline           # master_config.cfg + calibrator/target cfgs -> VLA_PIPELINE_CONFIG_DIR
+  casa_home: /arc/home/<user>/casa-6.6.6-18-pipeline-2025.1.0.37-py3.10.el8   # bin/casa must exist
+  qa_deps: /arc/projects/<space>/shared/qadeps/casa-6.6.6-18-py3.10          # qa/install_qadeps.sh
+  # antcorr_tables: shared/VLA_antcorr_tables   # offline fallback only
+  sdm_mode: link                            # link (symlink the SDM into the workdir) | copy
+  workdir: arc                              # arc | scratch | auto
+  scratch_max_sdm_gib: 20
+  disk_factor: 8.0                          # reserved bytes per track = disk_factor x SDM
+  resources:
+    default: {cores: 8, ram: 64}            # GB
+    by_config: {}                           # e.g. {A: {cores: 16, ram: 128}}
+  walltime_h: 168
+  worker:                                   # what a worker session runs (defaults shown)
+    cmd: bash
+    # args: <repo>/workers/calibrate_worker.sh
+  env: {}                                   # extra worker environment for every track
+
+qa:
+  products_dir: calibrated/products         # outside tracks/, so reviewers' links never change
+  hosting: local
+  group: null                               # read-only CADC reviewer group (docs/qa_access.md)
+  url_base: https://ws-uv.canfar.net/arc/files
+
+review:
+  enabled: true                             # false: a verified run goes straight to PROMOTING
+  stale_after_h: 168
+  escalate_after_iterations: 6
+  email_prefix: "[<project>-QA]"
+
+sheets:                                     # (M4)
+  enabled: false
+  tracker_id: null
+  flagbook_id: null
+  credentials: secrets/gsheets.json
+  editors: []
+  links: {}
+
+controller:
+  image: images.canfar.net/skaha/base-notebook:latest
+  poll_s: 300
+  grace_s: 900                              # a new attempt may be invisible for this long
+  relaunch_after_d: 5                       # days; hand off to a successor (cert and 14-day limit)
+  max_workers: {calibrate: 20}              # per worker stage, re-read every cycle; 0 holds a stage
+  max_sessions: null                        # shared cap across stages
+  min_free_tb: null                         # shared disk gate (M3)
+  auto_retry: 1
+  keep_running: false                       # true: stay up when every track has settled
+  cancel_successor_on_finish: true
+  successor_env: {}
+
+retention:
+  trim_work: true
+  drop_prev_iter_work: true
+  keep_raw_after_done: false
+  science_dir: calibrated/science
+
+# Tracks seeded from this file until archive sync (M2) discovers them.
+tracks: []
+# - {eb: <EB name>, priority: 0, config: D, path: /arc/projects/<space>/<sdm dir or tar>}

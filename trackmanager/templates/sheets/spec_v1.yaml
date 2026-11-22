@@ -26,26 +26,14 @@
 #   formula    the "formula" field below                    script   the Apps Script
 version: 1
 
-stage_colors:          # background per Stage (plan §3.3 names, plus the controller's current QUEUED/RUNNING)
+stage_colors:          # background per Stage (the 10 stages of trackmanager/states.py)
   DISCOVERED:        "#eeeeee"
-  PREFLIGHT:         "#eeeeee"
-  SKIP_CANDIDATE:    "#fff2cc"
-  REQUEST_NEEDED:    "#ffe599"
-  REQUESTED:         "#fff2cc"
-  LINK_RECEIVED:     "#d0e0e3"
-  DOWNLOADING:       "#d0e0e3"
-  VERIFYING_RAW:     "#d0e0e3"
-  QUEUED:            "#cfe2f3"
-  CAL_QUEUED:        "#cfe2f3"
-  RUNNING:           "#9fc5e8"
-  CAL_RUNNING:       "#9fc5e8"
-  QA_PUBLISHING:     "#9fc5e8"
+  AWAITING_DATA:     "#ffe599"
+  STAGING:           "#d0e0e3"
+  CALIBRATING:       "#9fc5e8"
   AWAITING_REVIEW:   "#f9cb9c"
-  RERUN:             "#cfe2f3"
-  PASSED:            "#b6d7a8"
   PROMOTING:         "#b6d7a8"
   DONE:              "#93c47d"
-  FAILED:            "#ea9999"
   AWAITING_DECISION: "#ea9999"
   NEEDS_MANUAL:      "#b4a7d6"
   SKIPPED:           "#999999"

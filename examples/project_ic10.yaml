@@ -1,0 +1,34 @@
+# IC10 D-config test track on the VVINGS test area (calibrates for real, ~6 h at 8 cores / 64 GB).
+#   python -m trackmanager.config examples/project_ic10.yaml --check
+#   bash scripts/submit_controller.sh examples/project_ic10.yaml
+project:
+  name: ic10
+  root: /arc/projects/VVINGS/vla-calib-mwe/runs/ic10
+  session_prefix: tm
+
+inputs: {source: arc_path}
+
+pipeline:
+  image: images.canfar.net/casa-6/casa:6.6.1-17-pipeline    # OS and xvfb-run only; CASA is casa_home
+  repo: /arc/home/ekoch/vla_processing/ReductionPipeline
+  source_configs: /arc/projects/VVINGS/vla-calib-mwe/config/ic10/pipeline
+  casa_home: /arc/home/ekoch/casa-6.6.6-18-pipeline-2025.1.0.37-py3.10.el8
+  qa_deps: /arc/projects/VVINGS/shared/qadeps/casa-6.6.6-18-py3.10
+  sdm_mode: link
+  resources: {default: {cores: 8, ram: 64}}
+
+qa: {products_dir: products, group: null}
+
+review: {enabled: true}
+
+controller:
+  image: images.canfar.net/skaha/base-notebook:latest
+  poll_s: 300
+  grace_s: 900
+  auto_retry: 0
+  max_workers: {calibrate: 1}
+
+retention: {science_dir: science}
+
+tracks:
+  - {eb: ic10d-eb42455346, config: D, path: /arc/projects/VVINGS/ic10_d_testcase/ic10_d_sdm.tar}

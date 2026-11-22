@@ -48,7 +48,7 @@ def samples():
         "archive": {**IC10_ARCHIVE, "ebid": "42000001", "sdm": "20A-346.sb42000000.eb42000001.59800.1",
                     "mjd": "59800.1", "date": "2022-08-09", "config": "C", "target": "WLM",
                     "fields": ["3C138", "WLM_1", "J0006-0623"], "est_size_gb": 184.0, "archive_status": "PUBLIC"},
-        "state": {"stage": "CAL_RUNNING", "iteration": 1, "detail": "submitting iteration 1 attempt 1",
+        "state": {"stage": "CALIBRATING", "iteration": 1, "detail": "submitting iteration 1 attempt 1",
                   "updated": "2026-11-21 06:00:00"},
         "job": {"job_id": "abcd1234"}, "run": {}, "review": {}, "links": {},
         "signup": {"QA Reviewer": "Reviewer B", "Email": "reviewer.b@example.org", "Notes": "away until Dec 1"},

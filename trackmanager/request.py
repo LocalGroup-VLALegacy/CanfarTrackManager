@@ -1,11 +1,11 @@
-"""Request a new track: it joins the queue in the database (state QUEUED) at the next cycle.
+"""Request a new track: it joins the queue in the database (CALIBRATING, activity queued) at the next cycle.
 
     python -m trackmanager.request --root ../runs/r1 --eb new-eb [--priority 1] [--env KEY=VALUE ...]
 Placeholder-worker options: --mode ok|fail|fail_first|no_result|oom, --sleep-s N.
 
 The request goes through inbox/ like any operator action, so the controller stays the only
 writer of state/. A request for a track that is already in the database is archived as
-ignored. Requested tracks wait in QUEUED until a worker slot is free (max_workers), in
+ignored. Requested tracks wait queued until a worker slot is free (controller.max_workers), in
 order of priority (higher first), then of the time they were queued.
 """
 import argparse
