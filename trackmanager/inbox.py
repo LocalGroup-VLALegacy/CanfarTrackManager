@@ -29,9 +29,22 @@ def apply(ctl):
                 result = "applied"
         elif st and action in REVIEW_ACTIONS:
             result = review.apply(ctl, st, d)
-        elif st and action == "retry" and st["stage"] == states.AWAITING_DECISION:
-            ctl.retry(st, d.get("by", "?"))
-            result = "applied"
+        elif st and action in ("retry", "recheck") and st["stage"] == states.AWAITING_DECISION:
+            allowed = ("failed", "preflight_failed") if action == "retry" else ("preflight_failed",)
+            if st.get("reason") in allowed:
+                ctl.retry(st, d.get("by", "?"), action)
+                result = "applied"
+            else:  # e.g. `retry` on a skip candidate would otherwise go to a stage it never reached
+                result = f"ignored: {action} does not apply to reason {st.get('reason')!r}"
+        elif st and action == "include" and st["stage"] == states.AWAITING_DECISION:
+            if st.get("reason") == "skip_candidate":
+                st["included"] = True
+                for key in ("reason", "preflight"):
+                    st.pop(key, None)
+                ctl.set_stage(st, states.DISCOVERED, None, f"operator include ({d.get('by', '?')})")
+                result = "applied"
+            else:
+                result = f"ignored: include applies only to skip candidates, not {st.get('reason')!r}"
         elif st and action == "skip" and st["stage"] in (states.AWAITING_DECISION, states.AWAITING_DATA):
             ctl.set_stage(st, states.SKIPPED, None, f"operator skip ({d.get('by', '?')})")
             result = "applied"

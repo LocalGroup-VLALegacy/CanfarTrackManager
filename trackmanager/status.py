@@ -25,6 +25,10 @@ def main(argv=None):
     print(f"cert       not after {hb.get('cert_not_after')} (file mtime {hb.get('cert_mtime')})")
 
     full = read_json(r.summary, {})
+    arc = full.get("archive")
+    if arc:
+        print(f"archive    last ok {arc.get('last_ok')}, {arc.get('ebs')} EBs, {arc.get('consecutive_failures', 0)} failed syncs in a row"
+              + (f"  ALARM: {arc['alarm']['error']}" if arc.get("alarm") else ""))
     w = full.get("workers") or {}
     if w:
         print(f"workers    {w.get('in_use')}/{w.get('limit')} slots in use ({w.get('running_tracks')} tracks, "

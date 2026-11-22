@@ -55,7 +55,7 @@ INPUT_FILES = ("manual_flagging.txt", "refant_ignore.txt")  # what a restart may
 class Edge:
     actor: str
     note: str = ""
-    pending: str | None = None  # milestone that writes the handler (M2, M3, M6)
+    pending: str | None = None  # milestone that writes the handler (M3, M6)
 
 
 def _e(actor, note="", pending=None):
@@ -64,9 +64,9 @@ def _e(actor, note="", pending=None):
 
 TRANSITIONS: dict[str, dict[str, Edge]] = {
     DISCOVERED: {
-        AWAITING_DATA: _e(CONTROLLER, "preflight ok, source nrao_link", "M2"),
-        STAGING: _e(CONTROLLER, "preflight ok, source arc_path", "M2"),
-        AWAITING_DECISION: _e(CONTROLLER, "reason skip_candidate or preflight_failed", "M2"),
+        AWAITING_DATA: _e(CONTROLLER, "preflight ok, source nrao_link"),
+        STAGING: _e(CONTROLLER, "preflight ok, source arc_path"),
+        AWAITING_DECISION: _e(CONTROLLER, "reason skip_candidate or preflight_failed"),
     },
     AWAITING_DATA: {
         STAGING: _e(OPERATOR, "link pasted into the dashboard", "M6"),
@@ -94,7 +94,7 @@ TRANSITIONS: dict[str, dict[str, Edge]] = {
         STAGING: _e(OPERATOR, "retry a failed staging", "M3"),
         CALIBRATING: _e(OPERATOR, "retry a failed calibration"),
         PROMOTING: _e(OPERATOR, "retry a failed promotion"),
-        DISCOVERED: _e(OPERATOR, "include a skip candidate, or rerun preflight after a cfg fix", "M2"),
+        DISCOVERED: _e(OPERATOR, "include a skip candidate, or recheck preflight after a cfg fix"),
         SKIPPED: _e(OPERATOR, "skip or abort"),
         NEEDS_MANUAL: _e(OPERATOR, "something outside the workflow has to happen"),
     },
@@ -141,6 +141,7 @@ def check_activity(stage: str, activity: str | None) -> None:
 
 
 def initial_stage(cfg=None) -> tuple[str, str | None]:
-    """Where a track enters. In M1 tracks come from the config and the calibrate worker still
-    stages its own raw data, so they start queued for calibration. M2 changes this to DISCOVERED."""
+    """Where a track from the config (`tracks:`) or an operator `request` enters: the calibrate worker
+    still stages its own raw data, so it starts queued for calibration. Tracks found by the archive
+    sync start at DISCOVERED instead (stages/discover.py)."""
     return CALIBRATING, QUEUED

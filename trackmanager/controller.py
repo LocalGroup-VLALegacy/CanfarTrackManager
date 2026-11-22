@@ -63,11 +63,12 @@ import sys
 import time
 from pathlib import Path
 
+from . import archive
 from . import config as projconfig
 from . import inbox, qa, scheduler
 from . import jobs as joblog
 from . import states as S
-from .stages import calibrate, promote, qa_publish
+from .stages import calibrate, discover, promote, qa_publish
 from .backend import LIVE, make_backend
 from .store import Root, age_s, append_jsonl, iso, log, read_json, write_json
 
@@ -75,7 +76,8 @@ REPO = Path(__file__).resolve().parent.parent
 # What the cycle does for a track, by (stage, activity) or by stage. Submitting is separate:
 # queued tracks of a worker stage go through SUBMITTERS once the scheduler admits them.
 # M3 and M6 register `stage_local` and `fetch_raw` under STAGING.
-HANDLERS = {(S.CALIBRATING, S.RUNNING): calibrate.reconcile,
+HANDLERS = {S.DISCOVERED: discover.run,
+            (S.CALIBRATING, S.RUNNING): calibrate.reconcile,
             (S.CALIBRATING, S.PUBLISHING): qa_publish.run,
             S.PROMOTING: promote.run}
 SUBMITTERS = {S.CALIBRATING: calibrate.submit}
@@ -114,6 +116,7 @@ class Controller:
         self.sessions: list[dict] = []
         self.orphans: set[str] = set()
         self.workers: dict = {}
+        self.cycle_cache: dict = {}  # per-cycle values shared by handlers (reset in cycle())
 
     # ---- database helpers ------------------------------------------------
     def event(self, eb, frm, to, reason, **extra):
@@ -199,15 +202,16 @@ class Controller:
                   failure_class=failure_class)
         self.set_stage(st, S.AWAITING_DECISION, None, reason)
 
-    def retry(self, st, by):
-        """AWAITING_DECISION (reason failed) -> the stage it failed in."""
+    def retry(self, st, by, action="retry"):
+        """AWAITING_DECISION (reason failed or preflight_failed) -> the stage it failed in.
+        A failed preflight goes back to DISCOVERED and is checked again (`recheck`)."""
         to = st.get("failed_from") or S.CALIBRATING
         act = st.get("failed_activity")
         if act == S.RUNNING or (act is None and to in S.ACTIVITIES):
             act = S.QUEUED  # a failed run is submitted again; a failed publish is just retried
         for key in ("failed_from", "failed_activity", "reason", "failure_class", "publish_failures"):
             st.pop(key, None)
-        self.set_stage(st, to, act if to in S.ACTIVITIES else None, f"operator retry ({by})")
+        self.set_stage(st, to, act if to in S.ACTIVITIES else None, f"operator {action} ({by})")
 
     def session_name(self, eb, n, k):
         clean = re.sub(r"[^a-z0-9-]", "-", eb.lower()).strip("-")
@@ -259,7 +263,9 @@ class Controller:
             sys.exit(f"lease now held by {lease and lease['holder']}; exiting")
         lease["heartbeat"] = iso()
         write_json(self.r.lease, lease)
+        alarm = archive.alarm(self.r)
         write_json(self.r.heartbeat, {"holder": self.me, "ts": iso(), "cycle": self.cycle_n,
+                                      **({"archive_alarm": alarm} if alarm else {}),
                                       "host": socket.gethostname(), **cert_info()})
 
     # ---- one cycle -------------------------------------------------------
@@ -271,6 +277,8 @@ class Controller:
         except Exception as e:  # no transitions without a fresh listing
             log(f"fetch failed, skipping cycle: {e!r}")
             return
+        self.cycle_cache = {}
+        discover.sync(self)  # archive tracks (DISCOVERED) before requests and config tracks
         for e in self.cfg.track_specs():  # config tracks enter the queue before any requests
             self.load_state(e["eb"])
         inbox.apply(self)
@@ -368,11 +376,13 @@ class Controller:
     def write_summaries(self, states):
         write_json(self.r.summary, {"ts": iso(), "controller": self.me, "cycle": self.cycle_n,
                                     "workers": self.workers,
+                                    "archive": {**(read_json(self.r.archive_dir / "sync.json") or {}),
+                                                "alarm": archive.alarm(self.r)} if archive.enabled(self.cfg) else None,
                                     "qa_home_url": qa.qa_url(self, self.base_dir("products_dir") / "index.html"),
                                     "ebs": {eb: {k: st.get(k) for k in
                                                  ("stage", "activity", "iteration", "attempt", "detail", "updated",
                                                   "hold", "hold_reason", "reason", "queued_at", "queue_position",
-                                                  "blocked_by", "qa_url")}
+                                                  "blocked_by", "qa_url", "request_state", "est_size_gb")}
                                             for eb, st in states.items()}})
         try:
             qa.write_index(self, states)
@@ -452,7 +462,8 @@ def main(argv=None):
         ctl.cycle()
         stages = {st["stage"] for st in (read_json(ctl.r.summary) or {}).get("ebs", {}).values()}
         settled = stages and stages <= S.SETTLED
-        if (a.max_cycles and ctl.cycle_n >= a.max_cycles) or (settled and not cfg.controller.keep_running):
+        if (a.max_cycles and ctl.cycle_n >= a.max_cycles) or (settled and not cfg.controller.keep_running
+                                           and not archive.enabled(cfg)):
             log(f"stopping after cycle {ctl.cycle_n}: stages {sorted(stages)}")
             if cfg.controller.cancel_successor_on_finish:
                 ctl.cancel_successor("work finished")

@@ -7,6 +7,7 @@ import inspect
 
 import pytest
 
+import test_discovery
 import test_fake_backend
 import test_stages
 from trackmanager import states as S
@@ -14,7 +15,7 @@ from trackmanager.store import read_jsonl
 
 
 def test_every_non_pending_edge_was_observed(request, tmp_path_factory):
-    wanted = {f"{m.__name__}::{n}" for m in (test_fake_backend, test_stages)
+    wanted = {f"{m.__name__}::{n}" for m in (test_fake_backend, test_stages, test_discovery)
               for n, f in inspect.getmembers(m, inspect.isfunction) if n.startswith("test_")}
     collected = {f"{i.module.__name__}::{i.originalname}" for i in request.session.items}
     if not wanted <= collected:
