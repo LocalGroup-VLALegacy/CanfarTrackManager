@@ -18,20 +18,15 @@ SKEL = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKEL))
 from trackmanager.store import read_json, read_jsonl  # noqa: E402
 
-BASE = {"name": "t", "poll_s": 1, "grace_s": 6, "auto_retry": 1, "max_running": 4,
-        "relaunch_after_s": None,
-        "worker": {"image": "local", "cmd": sys.executable, "cores": None, "ram": None},
-        "controller": {"image": "local"}}
+from helpers import make_project  # noqa: E402
 
 
 def setup(tmp_path, ebs, **over):
-    cfg = {**BASE, **over, "ebs": ebs}
-    (tmp_path / "cfg.json").write_text(json.dumps(cfg))
-    return tmp_path / "cfg.json", tmp_path / "run"
+    return make_project(tmp_path, ebs, **over)
 
 
 def controller(cfg, root, *extra, env=None, wait=True, timeout=90):
-    cmd = [sys.executable, "-m", "trackmanager.controller", "--config", str(cfg), "--root", str(root),
+    cmd = [sys.executable, "-m", "trackmanager.controller", "--project", str(cfg), "--root", str(root),
            "--backend", "fake", *extra]
     p = subprocess.Popen(cmd, cwd=SKEL, env={**os.environ, **(env or {})},
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -366,7 +361,9 @@ def test_qa_links_and_group_read(tmp_path):
     import shutil as sh
     from trackmanager.controller import Controller
     group = grp.getgrgid(os.getgid()).gr_name
-    c = Controller({**BASE, "ebs": [], "qa": {"group": group}}, tmp_path / "run", backend=None, me="t")
+    from trackmanager import config as projconfig
+    path, root = make_project(tmp_path, [], qa={"group": group})
+    c = Controller(projconfig.load(path, check_paths=False), root, backend=None, me="t")
     assert c.qa_url("/arc/projects/X/calibrated/products/eb1/iter_2/index.html") == \
         "https://ws-uv.canfar.net/arc/files/projects/X/calibrated/products/eb1/iter_2/index.html"
     assert c.qa_url(tmp_path / "index.html") is None  # not on /arc: no browser link

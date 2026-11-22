@@ -63,6 +63,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import config as projconfig
 from . import jobs as joblog
 from .backend import LIVE, TERMINAL, make_backend
 from .store import (Root, age_s, append_jsonl, create_json, iso, now, parse_iso,
@@ -70,9 +71,6 @@ from .store import (Root, age_s, append_jsonl, create_json, iso, now, parse_iso,
 
 REPO = Path(__file__).resolve().parent.parent
 SETTLED = ("DONE", "SKIPPED", "AWAITING_DECISION", "AWAITING_REVIEW")
-RETENTION_DEFAULTS = {"trim_work": True, "drop_prev_iter_work": True, "keep_raw_after_done": False,
-                      "science_dir": "science", "products_dir": "products"}
-QA_DEFAULTS = {"group": None, "url_base": "https://ws-uv.canfar.net/arc/files"}
 INPUT_FILES = ("manual_flagging.txt", "refant_ignore.txt")  # what a restart may carry
 # Reviewer verdicts (flag-tab M1): COMPLETE -> pass, RESTART -> restart; MANUAL REVIEW and
 # HELP REQUESTED hold the track for the operator (no rerun) until a later pass or restart.
@@ -130,7 +128,7 @@ def classify(status, run, platform_text):
 
 
 class Controller:
-    def __init__(self, cfg: dict, root: Path, backend, me: str, lose_response=(),
+    def __init__(self, cfg: projconfig.ProjectConfig, root: Path, backend, me: str, lose_response=(),
                  config_path: str | None = None, backend_kind: str = "canfar"):
         self.cfg = cfg
         self.r = Root(root)
@@ -142,7 +140,7 @@ class Controller:
         self.tag = re.sub(r"[^a-z0-9]", "", self.r.path.name.lower())[:10] or "run"
         # Session names are <prefix><run tag>-...; the prefix also marks this project's workers
         # when counting slots (orphans included), so keep it unique per project space.
-        self.prefix = re.sub(r"[^a-z0-9]", "", str(cfg.get("session_prefix", "tm")).lower()) or "tm"
+        self.prefix = cfg.project.session_prefix.lower()
         self.cycle_n = 0
         self.started = iso()
         self.sessions: list[dict] = []
@@ -169,27 +167,24 @@ class Controller:
 
     def track_ids(self):
         """Every track in the database: config EBs first, then requested ones."""
-        ebs = [e["eb"] for e in self.cfg["ebs"]]
+        ebs = [e["eb"] for e in self.cfg.track_specs()]
         sdir = self.r.summary.parent
         extra = sorted(p.stem for p in sdir.glob("*.json") if p.name != "summary.json") \
             if sdir.exists() else []
         return ebs + [eb for eb in extra if eb not in ebs]
 
     def spec(self, st):
-        return next((e for e in self.cfg["ebs"] if e["eb"] == st["eb"]), None) or st.get("spec") or {}
+        return next((e for e in self.cfg.track_specs() if e["eb"] == st["eb"]), None) or st.get("spec") or {}
 
     def retention(self, key):
-        return {**RETENTION_DEFAULTS, **(self.cfg.get("retention") or {})}[key]
+        return getattr(self.cfg.retention, key)
 
     def qa(self, key):
-        qa = self.cfg.get("qa") or {}
-        if key == "products_dir":
-            return qa.get("products_dir") or self.retention("products_dir")
-        return {**QA_DEFAULTS, **qa}[key]
+        return getattr(self.cfg.qa, key)
 
     def base_dir(self, key):
-        base = Path(self.qa(key) if key == "products_dir" else self.retention(key))
-        return base if base.is_absolute() else self.r.path / base
+        """products_dir / science_dir (relative settings are taken from the root)."""
+        return self.cfg.products_dir if key == "products_dir" else self.cfg.science_dir
 
     def out_dir(self, key, eb):
         """science_dir / products_dir for one EB (relative settings are taken from the root)."""
@@ -281,20 +276,12 @@ class Controller:
                         + "</tr>")
         body.append("</table>")
         _write_if_changed(base / "index.html",
-                          _page(f"{self.cfg.get('name', self.r.path.name)}: QA home", "".join(body)))
+                          _page(f"{(self.cfg.name or self.r.path.name)}: QA home", "".join(body)))
 
     def worker_limit(self):
-        """max_workers (or legacy max_running), re-read from the config file every cycle."""
-        cfg = self.cfg
-        if self.config_path:
-            try:
-                cfg = {**cfg, **{k: v for k, v in json.loads(Path(self.config_path).read_text()).items()
-                                 if k in ("max_workers", "max_running")}}
-            except (OSError, ValueError) as e:
-                log(f"config re-read failed, keeping the previous limit: {e!r}")
-        limit = cfg.get("max_workers", cfg.get("max_running", 1))
-        self.cfg["max_workers"] = limit
-        return int(limit)
+        """The calibrate worker limit, re-read from project.yaml every cycle (a bad edit keeps the
+        previous limits)."""
+        return int(self.cfg.reload_limits().max_workers.get("calibrate", 0))
 
     def is_worker_name(self, name):
         return bool(name) and name.startswith(f"{self.prefix}{self.tag}-") \
@@ -317,7 +304,7 @@ class Controller:
     # ---- lease -----------------------------------------------------------
     def stale(self, lease):
         a = age_s(lease.get("heartbeat"))
-        return a is None or a > 3 * self.cfg["poll_s"]
+        return a is None or a > 3 * self.cfg.controller.poll_s
 
     def holder_live(self, holder):
         sid = holder.split("-local")[0]
@@ -372,7 +359,7 @@ class Controller:
         except Exception as e:  # no transitions without a fresh listing
             log(f"fetch failed, skipping cycle: {e!r}")
             return
-        for e in self.cfg["ebs"]:  # config tracks enter the queue before any requests
+        for e in self.cfg.track_specs():  # config tracks enter the queue before any requests
             self.load_state(e["eb"])
         self.apply_inbox()
         states = {eb: self.load_state(eb) for eb in self.track_ids()}
@@ -459,23 +446,17 @@ class Controller:
         self.r.inputs(eb, n).mkdir(parents=True, exist_ok=True)
         if k == 1 and n > 1:
             self.drop_previous_work(eb, n - 1)
-        w = self.cfg["worker"]
+        res = self.cfg.resources(spec)
         env = {"TM_ROOT": str(self.r.path), "EB": eb, "ITERATION": str(n), "ATTEMPT": str(k),
-               "MODE": spec.get("mode", "ok"), "SLEEP_S": str(spec.get("sleep_s", 60))}
-        # Real workers (e.g. calibrate_worker.sh) take their inputs from config env. The CASA
-        # install is a project setting ("casa_home"); worker.env or an EB's env may override it.
-        if self.cfg.get("casa_home"):
-            env["CASA_HOME"] = str(self.cfg["casa_home"])
-        env["TRIM_WORK"] = "1" if self.retention("trim_work") else "0"
-        env["QA_DIR"] = str(self.qa_dir(eb, n))
-        env["QA_NAV_FIX"] = "1"
-        env.update({k: str(v) for k, v in {**w.get("env", {}), **spec.get("env", {})}.items()})
-        if w.get("cores"):
-            env["OMP_NUM_THREADS"] = str(w["cores"])
+               "MODE": spec.get("mode", "ok"), "SLEEP_S": str(spec.get("sleep_s", 60)),
+               "TRIM_WORK": "1" if self.retention("trim_work") else "0",
+               "QA_DIR": str(self.qa_dir(eb, n)), "QA_NAV_FIX": "1"}
+        # CASA, QA and pipeline paths, OMP_NUM_THREADS and per-project env come from project.yaml.
+        env.update(self.cfg.worker_env(spec))
         att = {"name": self.session_name(eb, n, k), "iteration": n, "attempt": k, "requested_at": iso(),
-               "request": {"image": w["image"], "cmd": w["cmd"],
-                           "args": w.get("args", f"{REPO}/trackmanager/worker.py"), "env": env,
-                           "cores": w.get("cores"), "ram": w.get("ram")},
+               "request": {"image": self.cfg.pipeline.image, "cmd": self.cfg.pipeline.worker.cmd,
+                           "args": self.cfg.worker_args(), "env": env,
+                           "cores": res.cores, "ram": res.ram},
                "ids": None, "last_status": None, "platform_saved": False}
         try:
             create_json(self.r.attempt(eb, n, k), att)  # attempt file before any API call
@@ -624,7 +605,7 @@ class Controller:
             self.save_platform(self.r.logs(eb, n, k), att, sess["id"])
             att["platform_status"] = status
         if status is None:
-            if att.get("last_status") is None and (age_s(att["requested_at"]) or 0) < self.cfg["grace_s"]:
+            if att.get("last_status") is None and (age_s(att["requested_at"]) or 0) < self.cfg.controller.grace_s:
                 return  # never listed yet: create() may be accepted but not visible
             att["platform_status"] = att.get("platform_status") or "missing"
         att["last_status"] = status or "missing"
@@ -666,7 +647,7 @@ class Controller:
             self.job_row(eb, n, k, att, status="verified", failure_class="none", **common)
             self.trim_work(eb, n)
             self.publish_qa(st)
-            to = "AWAITING_REVIEW" if self.cfg.get("review") else "PROMOTING"
+            to = "AWAITING_REVIEW" if self.cfg.review.enabled else "PROMOTING"
             self.set_stage(st, to, f"iteration {n} attempt {k} verified "
                                    f"(platform: {common['platform_status']})")
             if to == "PROMOTING":
@@ -681,7 +662,7 @@ class Controller:
         write_json(self.r.attempt(eb, n, k), att)
         self.job_row(eb, n, k, att, status="failed_verification", failure_class=fclass, **common)
         live_same_name = any(s["status"] in LIVE for s in self.by_name(att["name"]))
-        if k <= self.cfg["auto_retry"] and not live_same_name:
+        if k <= self.cfg.controller.auto_retry and not live_same_name:
             self.set_stage(st, "QUEUED", f"iteration {n} attempt {k} {fclass}; automatic retry")
         else:
             self.set_stage(st, "AWAITING_DECISION",
@@ -783,11 +764,11 @@ class Controller:
             self.write_qa_index(states)
         except OSError as e:
             log(f"QA index not written: {e!r}")
-        jobs = joblog.write_views(self.r, self.cfg.get("name", ""), iso())
-        joblog.write_track_views(self.r, states, jobs, self.cfg.get("name", ""), iso())
+        jobs = joblog.write_views(self.r, self.cfg.name, iso())
+        joblog.write_track_views(self.r, states, jobs, self.cfg.name, iso())
 
     def maybe_handoff(self):
-        after = self.cfg.get("relaunch_after_s")
+        after = (self.cfg.controller.relaunch_after_d or 0) * 86400
         if not after:
             return
         lease = read_json(self.r.lease)
@@ -800,27 +781,27 @@ class Controller:
                 log(f"successor {succ} is waiting; lease released, exiting")
                 sys.exit(0)
             if not any(s["id"] == succ and s["status"] in LIVE for s in self.sessions) \
-                    and (age_s(lease.get("handoff_at")) or 0) > self.cfg["grace_s"]:
+                    and (age_s(lease.get("handoff_at")) or 0) > self.cfg.controller.grace_s:
                 self.event("-", "lease", "handoff_failed", f"successor {succ} not live; will retry")
                 lease["handoff_to"] = None
                 write_json(self.r.lease, lease)
             return
         if (age_s(self.started) or 0) < after:
             return
-        c = self.cfg["controller"]
+        c = self.cfg.controller
         name = f"{self.prefix}{self.tag}-ctrl-{self.cycle_n}"
         args = f"{REPO}/scripts/run_controller.sh {self.config_path} {self.r.path}"
         try:
             env = {"TM_HANDOFF_FROM": self.me, "TM_BACKEND": self.backend_kind,
-                   **{k: str(v) for k, v in self.cfg.get("successor_env", {}).items()}}
+                   **{k: str(v) for k, v in self.cfg.controller.successor_env.items()}}
             if self.backend_kind == "fake":
                 env["TM_PYTHON"] = sys.executable
-            ids = self.backend.create(name, c["image"], "bash", args, env, None, None)
+            ids = self.backend.create(name, c.image, "bash", args, env, None, None)
         except Exception as e:
             log(f"successor create failed: {e!r}")
             return
         append_jsonl(self.r.jobs, {"ts": iso(), "kind": "controller", "eb": "-", "name": name,
-                                   "job_id": ids[0] if ids else None, "image": c["image"],
+                                   "job_id": ids[0] if ids else None, "image": c.image,
                                    "status": "submitted" if ids else "submit_unconfirmed",
                                    "log_dir": str(self.r.path / "controller")})
         if ids:
@@ -831,24 +812,24 @@ class Controller:
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--config", required=True)
-    p.add_argument("--root", required=True, help="project root for this run (created if needed)")
+    p.add_argument("--project", required=True, help="project.yaml (plan §3.1)")
+    p.add_argument("--root", help="track database root; overrides project.root (created if needed)")
     p.add_argument("--backend", choices=["canfar", "fake"], default="canfar")
     p.add_argument("--max-cycles", type=int, default=0, help="stop after N cycles (0 = until all settle)")
     p.add_argument("--lose-response", default="", help="comma-separated EBs whose create() response is discarded")
     a = p.parse_args(argv)
 
-    cfg = json.loads(Path(a.config).read_text())
-    casa_home = cfg.get("casa_home")
-    if casa_home and not os.access(Path(casa_home) / "bin" / "casa", os.X_OK):
-        sys.exit(f"casa_home {casa_home} has no executable bin/casa; fix the config")
-    root = Path(a.root).resolve()
+    try:  # the fake backend runs placeholder workers, so CASA paths are not checked
+        cfg = projconfig.load(a.project, root=a.root, check_paths=a.backend != "fake")
+    except projconfig.ConfigError as e:
+        sys.exit(str(e))
+    root = cfg.root
     root.mkdir(parents=True, exist_ok=True)
     sid = os.environ.get("skaha_sessionid", "nosession")
     me = sid if os.environ.get("TM_HEADLESS") else f"{sid}-local{os.getpid()}"
     backend = make_backend(a.backend, root)
     ctl = Controller(cfg, root, backend, me, [e for e in a.lose_response.split(",") if e],
-                     str(Path(a.config).resolve()), a.backend)
+                     cfg.path, a.backend)
     ctl.acquire_lease()
     ctl.event("-", "controller", "start", json.dumps(
         {"host": socket.gethostname(), "python": platform.python_version(), "backend": a.backend,
@@ -857,16 +838,16 @@ def main(argv=None):
         ctl.cycle()
         stages = {st["stage"] for st in (read_json(ctl.r.summary) or {}).get("ebs", {}).values()}
         settled = stages and stages <= set(SETTLED)
-        if (a.max_cycles and ctl.cycle_n >= a.max_cycles) or (settled and not cfg.get("keep_running")):
+        if (a.max_cycles and ctl.cycle_n >= a.max_cycles) or (settled and not cfg.controller.keep_running):
             log(f"stopping after cycle {ctl.cycle_n}: stages {sorted(stages)}")
-            if cfg.get("cancel_successor_on_finish", True):
+            if cfg.controller.cancel_successor_on_finish:
                 ctl.cancel_successor("work finished")
             lease = read_json(ctl.r.lease)
             lease.update(released=True, released_at=iso())
             write_json(ctl.r.lease, lease)
             ctl.event("-", "lease", "released", "controller finished normally")
             break
-        time.sleep(cfg["poll_s"])
+        time.sleep(cfg.controller.poll_s)
 
 
 if __name__ == "__main__":
