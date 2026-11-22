@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<FieldTable>
+    <Entity entityId="uid://evla/sdm/X1658825811030" entityIdEncrypted="na" entityTypeName="FieldTable" schemaVersion="4" documentVersion="1"/>
+    <ContainerEntity entityId="uid://evla/sdm/X1658825811011" entityIdEncrypted="na" entityTypeName="ASDM" schemaVersion="4" documentVersion="1"/>
+    <row>
+        <fieldId>Field_0</fieldId>
+        <fieldName>3C48</fieldName>
+        <numPoly>1</numPoly>
+        <delayDir>2 1 2 0.426245723 0.5787469766</delayDir>
+        <phaseDir>2 1 2 0.426245723 0.5787469766</phaseDir>
+        <referenceDir>2 1 2 0.426245723 0.5787469766</referenceDir>
+        <time>0</time>
+        <code>NONE</code>
+        <sourceId>0</sourceId>
+    </row>
+    <row>
+        <fieldId>Field_1</fieldId>
+        <fieldName>J0102+5824</fieldName>
+        <numPoly>1</numPoly>
+        <delayDir>2 1 2 0.2738539685 1.019326275</delayDir>
+        <phaseDir>2 1 2 0.2738539685 1.019326275</phaseDir>
+        <referenceDir>2 1 2 0.2738539685 1.019326275</referenceDir>
+        <time>0</time>
+        <code>NONE</code>
+        <sourceId>1</sourceId>
+    </row>
+    <row>
+        <fieldId>Field_2</fieldId>
+        <fieldName>IC10_1_CTR</fieldName>
+        <numPoly>1</numPoly>
+        <delayDir>2 1 2 0.0890481529 1.0348348023</delayDir>
+        <phaseDir>2 1 2 0.0890481529 1.0348348023</phaseDir>
+        <referenceDir>2 1 2 0.0890481529 1.0348348023</referenceDir>
+        <time>0</time>
+        <code>NONE</code>
+        <sourceId>2</sourceId>
+    </row>
+</FieldTable>
