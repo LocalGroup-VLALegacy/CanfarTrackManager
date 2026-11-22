@@ -51,12 +51,10 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import html
 import json
 import os
 import platform
 import re
-import shutil
 import socket
 import subprocess
 import sys
@@ -64,37 +62,14 @@ import time
 from pathlib import Path
 
 from . import config as projconfig
+from . import inbox, qa
 from . import jobs as joblog
-from .backend import LIVE, TERMINAL, make_backend
-from .store import (Root, age_s, append_jsonl, create_json, iso, now, parse_iso,
-                    read_json, read_jsonl, write_json)
+from .stages import calibrate, promote
+from .backend import LIVE, make_backend
+from .store import Root, age_s, append_jsonl, iso, log, read_json, write_json
 
 REPO = Path(__file__).resolve().parent.parent
 SETTLED = ("DONE", "SKIPPED", "AWAITING_DECISION", "AWAITING_REVIEW")
-INPUT_FILES = ("manual_flagging.txt", "refant_ignore.txt")  # what a restart may carry
-# Reviewer verdicts (flag-tab M1): COMPLETE -> pass, RESTART -> restart; MANUAL REVIEW and
-# HELP REQUESTED hold the track for the operator (no rerun) until a later pass or restart.
-REVIEW_ACTIONS = ("pass", "restart", "manual_review", "help_requested")
-
-
-def log(msg):
-    print(f"{iso()} {msg}", flush=True)
-
-
-def _page(title, body):
-    return ("<!doctype html><html><head><meta charset='utf-8'>"
-            f"<title>{html.escape(title)}</title><style>body{{font-family:sans-serif;margin:2em}}"
-            "td,th{padding:4px 10px;text-align:left;border-bottom:1px solid #ddd}</style></head>"
-            f"<body><h1>{html.escape(title)}</h1>{body}</body></html>\n")
-
-
-def _write_if_changed(path, text):
-    path = Path(path)
-    if path.exists() and path.read_text() == text:
-        return
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
 
 
 def cert_info():
@@ -109,22 +84,6 @@ def cert_info():
         except (OSError, subprocess.SubprocessError) as e:
             info["cert_error"] = repr(e)
     return info
-
-
-def classify(status, run, platform_text):
-    """failure_class for a failed attempt (plan §3.2 job database)."""
-    text = (platform_text or "").lower()
-    if run and run.get("exit_code") == 0:
-        return "no_output"
-    if run and run.get("exit_code") not in (None, 0):
-        return "failed"
-    if "oomkilled" in text or "out of memory" in text:
-        return "oom"
-    if "deadline" in text:
-        return "deadline"
-    if status in TERMINAL:
-        return "failed"
-    return "lost"
 
 
 class Controller:
@@ -189,94 +148,6 @@ class Controller:
     def out_dir(self, key, eb):
         """science_dir / products_dir for one EB (relative settings are taken from the root)."""
         return self.base_dir(key) / eb
-
-    def qa_dir(self, eb, n):
-        return self.out_dir("products_dir", eb) / f"iter_{n}"
-
-    def qa_url(self, path):
-        """Browser link through the ARC files service, or None for a path outside /arc."""
-        path = str(Path(path).resolve())
-        if not path.startswith("/arc/"):
-            return None
-        return self.qa("url_base").rstrip("/") + path[len("/arc"):]
-
-    def grant_qa_read(self, path, recursive=True):
-        """Give qa.group read (and directory traverse) on a QA folder, as Storage Management's
-        "Read" does: a POSIX ACL entry, plus a default entry so files added later inherit it."""
-        group = self.qa("group")
-        if not group or not Path(path).exists():
-            return True
-        cmds = [["setfacl", *(["-R"] if recursive else []), "-m", f"g:{group}:rX", str(path)]]
-        if Path(path).is_dir():
-            cmds.append(["setfacl", *(["-R"] if recursive else []), "-d", "-m", f"g:{group}:rX", str(path)])
-        for cmd in cmds:
-            try:
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-            except (OSError, subprocess.SubprocessError) as e:
-                r = None
-                err = repr(e)
-            if r is None or r.returncode != 0:
-                err = r.stderr.strip() if r is not None else err
-                self.event("-", "qa_access", "failed", f"{' '.join(cmd)}: {err}")
-                return False
-        return True
-
-    def publish_qa(self, st):
-        """After a verified run: the reviewers' copy of the flag inputs, group read, the link."""
-        eb, n = st["eb"], st.get("iteration", 1)
-        qd = self.qa_dir(eb, n)
-        if not qd.is_dir():
-            return
-        dst = qd / "inputs"
-        for name in INPUT_FILES:
-            if (self.r.inputs(eb, n) / name).exists():
-                dst.mkdir(exist_ok=True)
-                shutil.copy2(self.r.inputs(eb, n) / name, dst / name)
-        self.base_dir("products_dir").mkdir(parents=True, exist_ok=True)
-        self.grant_qa_read(self.base_dir("products_dir"), recursive=False)
-        self.grant_qa_read(qd.parent, recursive=False)
-        self.grant_qa_read(qd)
-        st["qa_url"] = self.qa_url(qd / "index.html")
-
-    def write_qa_index(self, states):
-        """<products_dir>/index.html (every track) and <EB>/index.html (every iteration), the
-        "QA home" and "all iterations" pages reviewers reach from the sheet and the QA pages."""
-        base = self.base_dir("products_dir")
-        if not base.is_dir():
-            return
-        rows = []
-        for eb, st in sorted(states.items()):
-            tdir = base / eb
-            iters = sorted((int(d.name[5:]) for d in tdir.glob("iter_*")
-                            if d.name[5:].isdigit() and (d / "index.html").exists()), reverse=True) \
-                if tdir.is_dir() else []
-            if not iters:
-                rows.append((eb, st, None))
-                continue
-            approved = (read_json(tdir / "approved.json") or {}).get("iteration")
-            items = []
-            for n in iters:
-                verdict = (read_json(self.r.review(eb, n)) or {}).get("verdict", "")
-                tag = "approved" if n == approved else verdict.replace("_", " ")
-                items.append(f'<li><a href="iter_{n}/index.html">iteration {n}</a>'
-                             + (f" ({html.escape(tag)})" if tag else "") + "</li>")
-            page = _page(f"{eb}: QA by iteration",
-                         f'<p><a href="../index.html">QA home (all tracks)</a></p>'
-                         f"<p>Stage: {html.escape(st['stage'])}, current iteration {st.get('iteration', 1)}</p>"
-                         f"<ul>{''.join(items)}</ul>")
-            _write_if_changed(tdir / "index.html", page)
-            rows.append((eb, st, iters[0]))
-        body = ["<table><tr><th>Track</th><th>Stage</th><th>Iteration</th><th>Latest QA</th>"
-                "<th>All iterations</th></tr>"]
-        for eb, st, latest in rows:
-            body.append(f"<tr><td>{html.escape(eb)}</td><td>{html.escape(st['stage'])}</td>"
-                        f"<td>{st.get('iteration', 1)}</td>"
-                        + (f'<td><a href="{eb}/iter_{latest}/index.html">iteration {latest}</a></td>'
-                           f'<td><a href="{eb}/index.html">all</a></td>' if latest else "<td></td><td></td>")
-                        + "</tr>")
-        body.append("</table>")
-        _write_if_changed(base / "index.html",
-                          _page(f"{(self.cfg.name or self.r.path.name)}: QA home", "".join(body)))
 
     def worker_limit(self):
         """The calibrate worker limit, re-read from project.yaml every cycle (a bad edit keeps the
@@ -361,13 +232,13 @@ class Controller:
             return
         for e in self.cfg.track_specs():  # config tracks enter the queue before any requests
             self.load_state(e["eb"])
-        self.apply_inbox()
+        inbox.apply(self)
         states = {eb: self.load_state(eb) for eb in self.track_ids()}
         for eb, st in states.items():
             if st["stage"] == "RUNNING":
-                self.reconcile(st)
+                calibrate.reconcile(self, st)
             elif st["stage"] == "PROMOTING":  # a controller stopped part way through promotion
-                self.promote(st)
+                promote.run(self, st)
         self.schedule(states)
         self.write_summaries(states)
         if not self.settled(states):
@@ -395,7 +266,7 @@ class Controller:
         waiting, submitted = [], 0
         for st in queue:
             if in_use < limit:
-                self.submit(st)
+                calibrate.submit(self, st)
                 in_use += 1
                 submitted += 1
             else:
@@ -437,331 +308,22 @@ class Controller:
         return sorted(cands, key=lambda s: s.get("startTime") or "", reverse=True)
 
     # ---- submission ------------------------------------------------------
-    def submit(self, st):
-        eb = st["eb"]
-        spec = self.spec(st)
-        n, k = st.get("iteration", 1), st["attempt"] + 1
-        lock = self.r.track(eb) / "worker.lock"
-        lock.unlink(missing_ok=True)  # every earlier attempt is terminal by now
-        self.r.inputs(eb, n).mkdir(parents=True, exist_ok=True)
-        if k == 1 and n > 1:
-            self.drop_previous_work(eb, n - 1)
-        res = self.cfg.resources(spec)
-        env = {"TM_ROOT": str(self.r.path), "EB": eb, "ITERATION": str(n), "ATTEMPT": str(k),
-               "MODE": spec.get("mode", "ok"), "SLEEP_S": str(spec.get("sleep_s", 60)),
-               "TRIM_WORK": "1" if self.retention("trim_work") else "0",
-               "QA_DIR": str(self.qa_dir(eb, n)), "QA_NAV_FIX": "1"}
-        # CASA, QA and pipeline paths, OMP_NUM_THREADS and per-project env come from project.yaml.
-        env.update(self.cfg.worker_env(spec))
-        att = {"name": self.session_name(eb, n, k), "iteration": n, "attempt": k, "requested_at": iso(),
-               "request": {"image": self.cfg.pipeline.image, "cmd": self.cfg.pipeline.worker.cmd,
-                           "args": self.cfg.worker_args(), "env": env,
-                           "cores": res.cores, "ram": res.ram},
-               "ids": None, "last_status": None, "platform_saved": False}
-        try:
-            create_json(self.r.attempt(eb, n, k), att)  # attempt file before any API call
-        except FileExistsError:
-            log(f"{eb}: iter_{n}/attempt_{k}.json already exists; reconciling it instead of resubmitting")
-            st["attempt"] = k
-            self.set_stage(st, "RUNNING", f"found existing iteration {n} attempt {k}")
-            return
-        st["attempt"] = k
-        self.set_stage(st, "RUNNING", f"submitting iteration {n} attempt {k}")
-        rq = att["request"]
-        try:
-            ids = self.backend.create(att["name"], rq["image"], rq["cmd"], rq["args"], env,
-                                      rq["cores"], rq["ram"])
-            if eb in self.lose_response:
-                log(f"{eb}: simulating a lost create() response (discarding {ids})")
-                self.lose_response.discard(eb)
-                ids = []
-        except Exception as e:
-            att["create_error"] = repr(e)
-            ids = []
-        att["ids"] = ids or None
-        att["created_at"] = iso()
-        write_json(self.r.attempt(eb, n, k), att)
-        self.job_row(eb, n, k, att, status="submitted" if ids else "submit_unconfirmed",
-                     cores=rq["cores"], ram=rq["ram"], image=rq["image"])
-
-    def drop_previous_work(self, eb, prev):
-        """retention.drop_prev_iter_work: a restart replaces iteration <prev>, so its splits/ and
-        any work/ go; its products/, inputs/, logs/ and review.json stay as the record."""
-        if not self.retention("drop_prev_iter_work"):
-            return
-        idir, res = self.r.iter_dir(eb, prev), read_json(self.r.result(eb, prev))
-        if not (res and res.get("ok") and Path(res.get("qa_dir") or self.qa_dir(eb, prev)).is_dir()):
-            return
-        gone = [d.name for d in self.intermediate_dirs(idir) + [idir / "splits"] if d.exists()]
-        for name in gone:
-            shutil.rmtree(idir / name, ignore_errors=True)
-        if gone:
-            self.event(eb, "retention", "dropped", f"iter_{prev}: deleted {', '.join(gone)} "
-                       "(replaced by a restart; products kept)")
-
-    @staticmethod
-    def intermediate_dirs(idir):
-        """work/ plus work and products dirs that failed attempts left aside (*.stale.*)."""
-        return [idir / "work"] + sorted(idir.glob("work.stale.*")) + sorted(idir.glob("products.stale.*"))
-
-    def trim_work(self, eb, n):
-        """retention.trim_work, after a verified run. The worker trims too; this catches a worker
-        that was killed after writing result.json and covers older workers."""
-        if not self.retention("trim_work"):
-            return
-        idir = self.r.iter_dir(eb, n)
-        gone = [d.name for d in self.intermediate_dirs(idir) if d.exists()]
-        for name in gone:
-            shutil.rmtree(idir / name, ignore_errors=True)
-        if gone:
-            self.event(eb, "retention", "trimmed", f"iter_{n}: deleted {', '.join(gone)}")
-
-    def promote(self, st):
-        """PROMOTING -> DONE: move the approved iteration's splits to science_dir/<EB>/ and its
-        products to products_dir/<EB>/, write provenance.json, then delete raw/ (unless
-        keep_raw_after_done). Every step is a rename or a check, so a controller killed part way
-        repeats it safely on the next cycle. Conflicts go to AWAITING_DECISION."""
-        eb, n = st["eb"], st.get("iteration", 1)
-        idir, res = self.r.iter_dir(eb, n), read_json(self.r.result(eb, n)) or {}
-        sci, prod = self.out_dir("science_dir", eb), Path(res.get("qa_dir") or self.qa_dir(eb, n))
-        try:
-            sci.mkdir(parents=True, exist_ok=True)
-            moved = []
-            for src in sorted((idir / "splits").glob("*")) if (idir / "splits").is_dir() else []:
-                if (sci / src.name).exists():
-                    raise FileExistsError(f"{sci / src.name} already exists")
-                shutil.move(str(src), str(sci / src.name))
-                moved.append(src.name)
-            if (idir / "splits").is_dir() and not any((idir / "splits").iterdir()):
-                (idir / "splits").rmdir()
-            splits = sorted(p.name for p in sci.iterdir() if p.name != "provenance.json")
-            if not splits:
-                raise FileNotFoundError(f"no splits in {idir / 'splits'} or {sci}")
-            if not prod.is_dir():
-                raise FileNotFoundError(f"no QA products in {prod}")
-            review = read_json(self.r.review(eb, n)) or {}
-            prov = {"eb": eb, "iteration": n, "sdm": res.get("sdm"), "splits": splits,
-                    "products": str(prod), "qa_url": self.qa_url(prod / "index.html"),
-                    "inputs_sha256": res.get("inputs", {}),
-                    "inputs_dir": str(self.r.inputs(eb, n)), "reviewer": review.get("by"),
-                    "verdict_at": review.get("decided") or review.get("applied"),
-                    "worker_session": res.get("session"), "qaplotter": res.get("qaplotter"),
-                    "track_db": str(self.r.track(eb)), "promoted": iso(), "controller": self.me}
-            write_json(sci / "provenance.json", prov)
-            write_json(prod / "provenance.json", prov)
-            write_json(prod.parent / "approved.json", prov)  # marks the approved iteration
-        except OSError as e:
-            self.set_stage(st, "AWAITING_DECISION", f"promotion of iteration {n} failed: {e}")
-            return
-        if moved:
-            self.event(eb, "retention", "promoted", f"iter_{n}: {len(moved)} split(s) -> {sci}; "
-                       f"approved QA {prod}")
-        self.trim_work(eb, n)
-        raw = self.r.track(eb) / "raw"
-        if not self.retention("keep_raw_after_done") and (raw.exists() or raw.is_symlink()):
-            if raw.is_symlink():
-                raw.unlink()  # never follow a link into the operator's own data
-            else:
-                shutil.rmtree(raw, ignore_errors=True)  # rmtree does not follow links inside raw/
-            self.event(eb, "retention", "raw_deleted", "raw data deleted after the track passed")
-        raw_gone = not (raw.exists() or raw.is_symlink())
-        st.update(science_dir=str(sci), products_dir=str(prod), completed_iteration=n,
-                  completed_attempt=st.get("attempt"), completed_by=prov["reviewer"],
-                  completed_at=st.get("completed_at") or iso(),
-                  raw_deleted_at=(st.get("raw_deleted_at") or iso()) if raw_gone else None)
-        k = st.get("attempt") or 0
-        att = read_json(self.r.attempt(eb, n, k)) if k else None
-        if att:
-            self.job_row(eb, n, k, att, promoted=st["completed_at"])
-        self.set_stage(st, "DONE", f"iteration {n} promoted to {sci}")
 
     # ---- monitoring and verification ------------------------------------
-    def reconcile(self, st):
-        eb, n, k = st["eb"], st.get("iteration", 1), st["attempt"]
-        att = read_json(self.r.attempt(eb, n, k))
-        sess = None
-        if att.get("ids"):
-            sess = next((s for s in self.sessions if s["id"] == att["ids"][0]), None)
-        if sess is None:
-            cands = self.by_name(att["name"])
-            sess = cands[0] if cands else None
-            if sess and not att.get("ids"):
-                att["ids"] = [sess["id"]]
-                att["adopted"] = True
-                write_json(self.r.attempt(eb, n, k), att)
-                self.event(eb, "RUNNING", "RUNNING", f"adopted session {sess['id']} by name "
-                           "after an unconfirmed create()")
-                self.job_row(eb, n, k, att, status="adopted")
-        status = sess["status"] if sess else None
-
-        if status in LIVE:
-            if status != att.get("last_status"):
-                att["last_status"] = status
-                att.setdefault("first_seen", {})[status] = iso()
-                write_json(self.r.attempt(eb, n, k), att)
-                self.job_row(eb, n, k, att, status=status)
-            return
-        if status in TERMINAL and not att.get("platform_saved"):
-            self.save_platform(self.r.logs(eb, n, k), att, sess["id"])
-            att["platform_status"] = status
-        if status is None:
-            if att.get("last_status") is None and (age_s(att["requested_at"]) or 0) < self.cfg.controller.grace_s:
-                return  # never listed yet: create() may be accepted but not visible
-            att["platform_status"] = att.get("platform_status") or "missing"
-        att["last_status"] = status or "missing"
-        write_json(self.r.attempt(eb, n, k), att)
-        self.verify(st, att)
-
-    def save_platform(self, d, att, sid):
-        d.mkdir(parents=True, exist_ok=True)
-        errors = {}
-        for name, fn, fname in (("info", self.backend.info, "session_info.json"),
-                                ("events", self.backend.events, "events.txt"),
-                                ("logs", self.backend.logs, "session.log")):
-            try:
-                out = fn(sid)
-                text = out if isinstance(out, str) else json.dumps(out, indent=1, default=str)
-                (d / fname).write_text(text or "")
-            except Exception as e:
-                errors[name] = repr(e)
-        att["platform_saved"] = iso()
-        if errors:
-            att["platform_errors"] = errors
-
-    def verify(self, st, att):
-        eb, n, k = st["eb"], st.get("iteration", 1), st["attempt"]
-        idir = self.r.iter_dir(eb, n)
-        res = read_json(self.r.result(eb, n))
-        run = read_json(self.r.logs(eb, n, k) / "run.json") or {}
-        ok = bool(res and res.get("ok") and res.get("iteration", n) == n
-                  and all((idir / o).exists() for o in res.get("outputs", [])))
-        peak = run.get("peak_anon_bytes")
-        common = {"platform_status": att.get("platform_status"),
-                  "exit_code": run.get("exit_code"), "wall_s": run.get("wall_s"),
-                  "peak_rss_mb": round(peak / 2**20) if peak else run.get("peak_rss_mb"),
-                  "peak_disk_gb": round(run["peak_workdir_bytes"] / 1e9, 1)
-                  if run.get("peak_workdir_bytes") else None}
-        if ok:
-            att["outcome"] = "completed"
-            write_json(self.r.attempt(eb, n, k), att)
-            self.job_row(eb, n, k, att, status="verified", failure_class="none", **common)
-            self.trim_work(eb, n)
-            self.publish_qa(st)
-            to = "AWAITING_REVIEW" if self.cfg.review.enabled else "PROMOTING"
-            self.set_stage(st, to, f"iteration {n} attempt {k} verified "
-                                   f"(platform: {common['platform_status']})")
-            if to == "PROMOTING":
-                self.promote(st)
-            return
-        text = ""
-        for f in ("events.txt", "session_info.json", "session.log"):
-            p = self.r.logs(eb, n, k) / f
-            text += p.read_text(errors="ignore") if p.exists() else ""
-        fclass = classify(att.get("platform_status"), run, text)
-        att["outcome"] = fclass
-        write_json(self.r.attempt(eb, n, k), att)
-        self.job_row(eb, n, k, att, status="failed_verification", failure_class=fclass, **common)
-        live_same_name = any(s["status"] in LIVE for s in self.by_name(att["name"]))
-        if k <= self.cfg.controller.auto_retry and not live_same_name:
-            self.set_stage(st, "QUEUED", f"iteration {n} attempt {k} {fclass}; automatic retry")
-        else:
-            self.set_stage(st, "AWAITING_DECISION",
-                           f"iteration {n} attempt {k} {fclass}; operator decision needed")
 
     # ---- operator input --------------------------------------------------
-    def apply_inbox(self):
-        for f in sorted(self.r.inbox.glob("*.json")) if self.r.inbox.exists() else []:
-            d = read_json(f, {})
-            eb, action = d.get("eb"), d.get("action")
-            valid = bool(eb) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", eb) is not None
-            st = read_json(self.r.state(eb)) if valid else None
-            result = "ignored"
-            if action == "request":
-                if not valid:
-                    result = "ignored: invalid EB name"
-                elif st:
-                    result = f"ignored: already tracked ({st['stage']})"
-                else:
-                    spec = {k: v for k, v in (d.get("spec") or {}).items() if k != "eb"}
-                    st = {"eb": eb, "stage": "NEW", "attempt": 0, "hold": False, "spec": spec,
-                          "requested_by": d.get("by", "?")}
-                    self.set_stage(st, "QUEUED", f"requested by {d.get('by', '?')}")
-                    result = "applied"
-            elif st and action in REVIEW_ACTIONS:
-                result = self.apply_review(st, d)
-            elif st and action == "retry" and st["stage"] == "AWAITING_DECISION":
-                self.set_stage(st, "QUEUED", f"operator retry ({d.get('by', '?')})")
-                result = "applied"
-            elif st and action == "skip" and st["stage"] == "AWAITING_DECISION":
-                self.set_stage(st, "SKIPPED", f"operator skip ({d.get('by', '?')})")
-                result = "applied"
-            elif st and action in ("hold", "release"):
-                st["hold"] = action == "hold"
-                write_json(self.r.state(eb), st)
-                self.event(eb, st["stage"], st["stage"], f"operator {action}")
-                result = "applied"
-            self.r.inbox_archive.mkdir(parents=True, exist_ok=True)
-            write_json(self.r.inbox_archive / f.name, {**d, "result": result, "processed": iso()})
-            f.unlink()
-            log(f"inbox {f.name}: {action} for {eb} -> {result}")
-
-    def apply_review(self, st, d):
-        """A reviewer verdict for the current iteration: pass -> DONE, restart -> iteration n+1,
-        manual_review / help_requested -> HOLD flag set (stage stays AWAITING_REVIEW), shown to the
-        operator; a later pass or restart for the same iteration clears that hold."""
-        eb, n, by = st["eb"], st.get("iteration", 1), d.get("by", "?")
-        if d.get("iteration") is not None and int(d["iteration"]) != n:
-            return f"ignored: decision for iteration {d['iteration']}, track is at iteration {n}"
-        if st["stage"] != "AWAITING_REVIEW":
-            return f"ignored: track is {st['stage']}, not AWAITING_REVIEW"
-        inputs = d.get("inputs") or {}
-        bad = sorted(set(inputs) - set(INPUT_FILES))
-        if bad:
-            return f"ignored: unknown input files {bad} (allowed: {list(INPUT_FILES)})"
-        review = {"iteration": n, "verdict": d["action"], "by": by, "decided": d.get("ts"),
-                  "applied": iso(), "notes": d.get("notes", ""), "inputs_next": sorted(inputs)}
-        k = st.get("attempt") or 0
-        att = read_json(self.r.attempt(eb, n, k)) if k else None
-        if att:  # the job log shows which job's output each verdict was about
-            self.job_row(eb, n, k, att, verdict=d["action"], verdict_at=review["applied"])
-        if d["action"] in ("manual_review", "help_requested"):
-            history = (read_json(self.r.review(eb, n)) or {}).get("history", [])
-            write_json(self.r.review(eb, n), {**review, "history": history + [review]})
-            st.update(hold=True, hold_reason=d["action"])
-            write_json(self.r.state(eb), st)
-            self.event(eb, st["stage"], st["stage"], f"{d['action']} from {by}: held for the operator"
-                       + (f" ({d['notes']})" if d.get("notes") else ""))
-            return "applied"
-        history = (read_json(self.r.review(eb, n)) or {}).get("history", [])
-        write_json(self.r.review(eb, n), {**review, "history": history + [review]})
-        if st.get("hold_reason") in ("manual_review", "help_requested"):
-            st.update(hold=False, hold_reason=None)  # the reviewer has now decided
-        if d["action"] == "pass":
-            self.set_stage(st, "PROMOTING", f"iteration {n} passed review ({by})")
-            self.promote(st)
-            return "applied"
-        nxt = self.r.inputs(eb, n + 1)
-        nxt.mkdir(parents=True, exist_ok=True)
-        for name, text in inputs.items():  # frozen now; later sheet edits don't change this run
-            tmp = nxt / f"partial-{name}"
-            tmp.write_text(text)
-            os.replace(tmp, nxt / name)
-        st.update(iteration=n + 1, attempt=0)
-        self.set_stage(st, "QUEUED", f"restart requested by {by}: iteration {n + 1} "
-                                     f"with {', '.join(sorted(inputs)) or 'no new inputs'}")
-        return "applied"
 
     # ---- summaries and handoff ------------------------------------------
     def write_summaries(self, states):
         write_json(self.r.summary, {"ts": iso(), "controller": self.me, "cycle": self.cycle_n,
                                     "workers": self.workers,
-                                    "qa_home_url": self.qa_url(self.base_dir("products_dir") / "index.html"),
+                                    "qa_home_url": qa.qa_url(self, self.base_dir("products_dir") / "index.html"),
                                     "ebs": {eb: {k: st.get(k) for k in
                                                  ("stage", "iteration", "attempt", "detail", "updated", "hold",
                                                   "hold_reason", "queued_at", "queue_position", "qa_url")}
                                             for eb, st in states.items()}})
         try:
-            self.write_qa_index(states)
+            qa.write_index(self, states)
         except OSError as e:
             log(f"QA index not written: {e!r}")
         jobs = joblog.write_views(self.r, self.cfg.name, iso())

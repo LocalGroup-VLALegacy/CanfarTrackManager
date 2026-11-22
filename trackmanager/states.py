@@ -45,6 +45,11 @@ REASONS = ("skip_candidate", "preflight_failed", "failed")
 
 CONTROLLER, OPERATOR, REVIEWER = "controller", "operator", "reviewer"
 
+# Reviewer verdicts (flag-tab M1): COMPLETE -> pass, RESTART -> restart; MANUAL REVIEW and
+# HELP REQUESTED hold the track for the operator (no rerun) until a later pass or restart.
+REVIEW_ACTIONS = ("pass", "restart", "manual_review", "help_requested")
+INPUT_FILES = ("manual_flagging.txt", "refant_ignore.txt")  # what a restart may carry
+
 
 @dataclass(frozen=True)
 class Edge:

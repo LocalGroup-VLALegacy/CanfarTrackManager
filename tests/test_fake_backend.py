@@ -359,21 +359,22 @@ def test_promotion_conflict_waits_for_operator_and_resumes(tmp_path):
 def test_qa_links_and_group_read(tmp_path):
     import grp
     import shutil as sh
+    from trackmanager import qa
     from trackmanager.controller import Controller
     group = grp.getgrgid(os.getgid()).gr_name
     from trackmanager import config as projconfig
     path, root = make_project(tmp_path, [], qa={"group": group})
     c = Controller(projconfig.load(path, check_paths=False), root, backend=None, me="t")
-    assert c.qa_url("/arc/projects/X/calibrated/products/eb1/iter_2/index.html") == \
+    assert qa.qa_url(c, "/arc/projects/X/calibrated/products/eb1/iter_2/index.html") == \
         "https://ws-uv.canfar.net/arc/files/projects/X/calibrated/products/eb1/iter_2/index.html"
-    assert c.qa_url(tmp_path / "index.html") is None  # not on /arc: no browser link
-    assert c.qa_dir("eb1", 2) == tmp_path / "run" / "products" / "eb1" / "iter_2"
+    assert qa.qa_url(c, tmp_path / "index.html") is None  # not on /arc: no browser link
+    assert qa.qa_dir(c, "eb1", 2) == tmp_path / "run" / "products" / "eb1" / "iter_2"
     if not sh.which("setfacl"):
         pytest.skip("no setfacl")
-    qd = c.qa_dir("eb1", 2)
+    qd = qa.qa_dir(c, "eb1", 2)
     (qd / "sub").mkdir(parents=True)
     (qd / "sub" / "p.html").write_text("x")
-    assert c.grant_qa_read(qd)
+    assert qa.grant_qa_read(c, qd)
     (qd / "later.html").write_text("y")  # inherits the default entry
     for f in (qd, qd / "sub" / "p.html", qd / "later.html"):
         out = subprocess.run(["getfacl", "-p", str(f)], capture_output=True, text=True).stdout
