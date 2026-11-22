@@ -19,7 +19,7 @@ test = ["pytest", "openpyxl"]
 include = ["trackmanager*"]
 
 [tool.setuptools.package-data]
-trackmanager = ["templates/sheets/*.yaml"]
+trackmanager = ["templates/*.yaml", "templates/sheets/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
