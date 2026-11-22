@@ -40,7 +40,8 @@ def minimal(**over):
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
 def test_examples_load_without_path_checks(path):
     cfg = C.load(path, check_paths=False)
-    assert cfg.name and cfg.tracks
+    # archive projects (M2) get their tracks from TAP, so `tracks:` may be empty
+    assert cfg.name and (cfg.tracks or cfg.project.vla_project_codes)
     assert cfg.limits().max_workers
 
 
