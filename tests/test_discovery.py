@@ -31,7 +31,8 @@ def test_archive_ebs_are_discovered_and_preflighted_to_their_gates(tmp_path):
     assert p.returncode == 0, p.output
     ok = st(root, 1)
     assert (ok["stage"], ok["request_state"]) == ("AWAITING_DATA", "needs_request")
-    assert ok["archive_url"].startswith("https://data.nrao.edu/") and ok["spec"] == {"config": "C", "source": "archive"}
+    assert ok["archive_url"].startswith("https://data.nrao.edu/") and ok["spec"] == {"config": "C", "source": "archive",
+                                                                  "sdm": "99A-001.sb1001.eb2001.60000.10000000000"}
     assert ok["preflight"]["verdict"] == "ok" and ok["est_size_gb"] == 40.0
     short = st(root, 2)
     assert (short["stage"], short["reason"]) == ("AWAITING_DECISION", "skip_candidate")
@@ -51,13 +52,13 @@ def test_archive_ebs_are_discovered_and_preflighted_to_their_gates(tmp_path):
     assert summ["ebs"][ok["eb"]]["est_size_gb"] == 40.0
 
 
-def test_arc_path_tracks_go_to_staging_and_wait_for_a_stage_worker(tmp_path):
+def test_arc_path_tracks_stop_at_staging_when_no_input_location_is_configured(tmp_path):
     cfg, root = project(tmp_path, source="arc_path")
     run(cfg, root)
     s = st(root, 1)
-    assert (s["stage"], s["activity"]) == ("STAGING", "queued")
-    assert s["blocked_by"] and s["queue_position"] >= 1                           # waits in the database
-    assert not submissions(root)
+    assert (s["stage"], s["reason"], s["failed_from"]) == ("AWAITING_DECISION", "failed", "STAGING")
+    assert "inputs.arc_dir" in s["detail"]
+    assert not submissions(root)                      # no session is spent on a missing input
 
 
 def test_include_lets_a_skip_candidate_through_and_retry_does_not_apply(tmp_path):

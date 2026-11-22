@@ -32,7 +32,7 @@ def sync(ctl):
         if read_json(ctl.r.state(eb)) is None:
             rec = res.kept[eb]
             st = {"eb": eb, "stage": "NEW", "iteration": 1, "attempt": 0, "hold": False,
-                  "spec": {"config": rec["config"], "source": "archive"}}
+                  "spec": {"config": rec["config"], "source": "archive", "sdm": rec["sdm"]}}
             ctl.set_stage(st, S.DISCOVERED, None, "found by archive sync")
     for eb, diff in res.changed.items():
         st = read_json(ctl.r.state(eb)) or {}

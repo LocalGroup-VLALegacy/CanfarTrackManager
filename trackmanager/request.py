@@ -1,4 +1,4 @@
-"""Request a new track: it joins the queue in the database (CALIBRATING, activity queued) at the next cycle.
+"""Request a new track: it joins the queue in the database (STAGING if it has --path, else CALIBRATING; activity queued) at the next cycle.
 
     python -m trackmanager.request --root ../runs/r1 --eb new-eb [--priority 1] [--env KEY=VALUE ...]
 Placeholder-worker options: --mode ok|fail|fail_first|no_result|oom, --sleep-s N.
@@ -21,12 +21,18 @@ def main(argv=None):
     p.add_argument("--root", required=True)
     p.add_argument("--eb", required=True)
     p.add_argument("--priority", type=int, default=0)
+    p.add_argument("--path", help="SDM directory or NRAO tar to stage (the track then starts at STAGING)")
+    p.add_argument("--size-gb", type=float, help="SDM size, for the disk gate when there is no TAP estimate")
     p.add_argument("--mode")
     p.add_argument("--sleep-s", type=float)
     p.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
                    help="worker environment for this track (added to the config's worker env)")
     a = p.parse_args(argv)
     spec = {"priority": a.priority}
+    if a.path:
+        spec["path"] = str(Path(a.path).resolve())
+    if a.size_gb:
+        spec["size_gb"] = a.size_gb
     if a.mode:
         spec["mode"] = a.mode
     if a.sleep_s is not None:

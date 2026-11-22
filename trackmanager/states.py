@@ -73,8 +73,8 @@ TRANSITIONS: dict[str, dict[str, Edge]] = {
         SKIPPED: _e(OPERATOR, "operator skips the request", "M6"),
     },
     STAGING: {
-        CALIBRATING: _e(CONTROLLER, "raw data verified", "M3"),
-        AWAITING_DECISION: _e(CONTROLLER, "reason failed", "M3"),
+        CALIBRATING: _e(CONTROLLER, "raw data verified"),
+        AWAITING_DECISION: _e(CONTROLLER, "reason failed"),
     },
     CALIBRATING: {
         AWAITING_REVIEW: _e(CONTROLLER, "run verified, QA published"),
@@ -91,7 +91,7 @@ TRANSITIONS: dict[str, dict[str, Edge]] = {
     },
     AWAITING_DECISION: {
         # `retry` returns to st["failed_from"]; the target is checked against this row.
-        STAGING: _e(OPERATOR, "retry a failed staging", "M3"),
+        STAGING: _e(OPERATOR, "retry a failed staging"),
         CALIBRATING: _e(OPERATOR, "retry a failed calibration"),
         PROMOTING: _e(OPERATOR, "retry a failed promotion"),
         DISCOVERED: _e(OPERATOR, "include a skip candidate, or recheck preflight after a cfg fix"),
@@ -140,8 +140,10 @@ def check_activity(stage: str, activity: str | None) -> None:
         raise IllegalTransition(f"{stage} activity {activity!r} not in {allowed}")
 
 
-def initial_stage(cfg=None) -> tuple[str, str | None]:
-    """Where a track from the config (`tracks:`) or an operator `request` enters: the calibrate worker
-    still stages its own raw data, so it starts queued for calibration. Tracks found by the archive
-    sync start at DISCOVERED instead (stages/discover.py)."""
+def initial_stage(cfg=None, spec=None) -> tuple[str, str | None]:
+    """Where a track from the config (`tracks:`) or an operator `request` enters: STAGING if it
+    names an input (`path`), else CALIBRATING (the placeholder worker, or raw data already in
+    place). Tracks found by the archive sync start at DISCOVERED instead (stages/discover.py)."""
+    if (spec or {}).get("path"):
+        return STAGING, QUEUED
     return CALIBRATING, QUEUED

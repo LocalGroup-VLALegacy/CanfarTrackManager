@@ -176,8 +176,10 @@ class TrackCfg:
     path: str | None = None             # SDM directory or NRAO tar, staged by stage_local
     size_gb: float | None = None        # SDM size when there is no TAP estimate (disk gate)
     env: dict = _d()
-    mode: str | None = None
+    mode: str | None = None             # placeholder-worker fault injection (tests)
     sleep_s: float | None = None
+    stage_mode: str | None = None       # the same for the stage worker
+    stage_sleep_s: float | None = None
 
     def spec(self) -> dict:
         d = {k: v for k, v in dc.asdict(self).items() if v not in (None, {}) and k != "eb"}

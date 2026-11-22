@@ -9,7 +9,7 @@ row per job and, every controller cycle, rewrites three views of it:
   jobs/jobs.csv       the same table for a spreadsheet
   jobs/jobs.log       a fixed-width text table, newest first, for a terminal or a quick look
 
-Columns: job id (CANFAR session id), session name, kind (calibrate | controller), track (EB),
+Columns: job id (CANFAR session id), session name, kind (calibrate | stage | controller), track (EB),
 iteration, attempt, status (last known), outcome (verified | failure class), submitted,
 started, ended, wall time, cores/RAM requested, peak memory and workdir, exit code, the review
 verdict on that job's output (pass | restart | manual_review | help_requested) and, for the job
@@ -42,6 +42,8 @@ DONE_STATUSES = ("verified", "failed_verification")
 def job_key(row: dict) -> str:
     if row.get("kind") == "controller":
         return row["name"]
+    if row.get("kind") == "stage":
+        return f"{row['eb']}#stage-a{row['attempt']}"
     return f"{row['eb']}#i{row.get('iteration', 1)}a{row['attempt']}"
 
 

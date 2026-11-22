@@ -9,7 +9,8 @@
 #   - result.json only if the outputs verify (exit status alone is not trusted).
 #
 # Layout (plan §3.2):
-#   tracks/<EB>/raw/<SDM>/                    staged once per track (from TAR), shared by iterations
+#   tracks/<EB>/raw/<SDM>/                    staged and verified once per track by stage_local (stage/manifest.json),
+#                                             shared by iterations; this worker only reads it
 #   tracks/<EB>/iter_<n>/inputs/              manual_flagging.txt, refant_ignore.txt (frozen by the controller)
 #   tracks/<EB>/iter_<n>/logs/attempt_<k>/    stdout.log, run.json, peak_* samples
 #   tracks/<EB>/iter_<n>/work/                CASA working directory (fresh per attempt; old one moved aside)
@@ -26,7 +27,7 @@
 # Env from the controller: TM_ROOT, EB, ITERATION, ATTEMPT. From config (worker.env):
 #   CASA_HOME   CASA install (bin/casa runs the pipeline, bin/python3 runs QAPlotter). Required.
 #   CASA        optional override of the CASA binary (default $CASA_HOME/bin/casa)
-#   PIPELINE    ReductionPipeline checkout          TAR       NRAO tar holding the SDM
+#   PIPELINE    ReductionPipeline checkout
 #   CASA_WRAPPER  casa_with_limits.sh               SDM_MODE  link (default) | copy
 #   QA_DEPS     QAPlotter install for CASA's python (qa/install_qadeps.sh); QA_SCRIPT <repo>/qa/run_qa.sh
 #   VLA_PIPELINE_CONFIG_DIR  optional per-project pipeline cfgs (default: the repo's config_files/)
@@ -93,23 +94,17 @@ timed() { local name=$1; shift; local t; t=$(date +%s); "$@"; local rc=$?; STEP_
     say "VLA_PIPELINE_CONFIG_DIR has no master_config.cfg"; finish 12; }
 [[ -n ${VLA_PIPELINE_CONFIG_DIR:-} ]] && export VLA_PIPELINE_CONFIG_DIR
 
-# --- stage the raw SDM once per track (stage_local): unpack, check, rename -----------
-RAW="$TRACK/raw"; mkdir -p "$RAW"
-SDM=$(find "$RAW" -mindepth 1 -maxdepth 1 -type d -name '*.sb*.eb*' ! -name '.partial' -printf '%f\n' | head -n1)
-if [[ -z $SDM ]]; then
-    say "unpacking $TAR"
-    rm -rf "$RAW/.partial"; mkdir -p "$RAW/.partial"
-    timed stage tar -xf "$TAR" -C "$RAW/.partial" --strip-components=2 || { say "tar failed"; finish 10; }
-    SDM=$(find "$RAW/.partial" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | head -n1)
-    [[ -n $SDM ]] || { say "no SDM directory in the tar"; finish 10; }
-    mv "$RAW/.partial/$SDM" "$RAW/$SDM" && rm -rf "$RAW/.partial"
+# --- raw data: staged and verified by stage_local (tracks/<EB>/stage/manifest.json) -------
+MANIFEST="$TRACK/stage/manifest.json"
+if [[ ! -f $MANIFEST ]] || ! grep -q '"ok": true' "$MANIFEST"; then
+    say "no verified $MANIFEST: stage_local has not finished for this track"; finish 11
 fi
-SDMDIR="$RAW/$SDM"
-[[ -f $SDMDIR/ASDM.xml && -f $SDMDIR/Main.xml ]] || { say "SDM lacks ASDM.xml/Main.xml"; finish 11; }
-MAIN_ROWS=$(grep -o '<row>' "$SDMDIR/Main.xml" | wc -l); BDFS=$(ls "$SDMDIR/ASDMBinary" | wc -l)
-SDM_BYTES=$(du -sb "$SDMDIR" | cut -f1)
-say "SDM $SDM: $MAIN_ROWS Main rows, $BDFS BDFs, $SDM_BYTES bytes"
-[[ $MAIN_ROWS == "$BDFS" ]] || { say "BDF count does not match Main.xml rows"; finish 11; }
+SDM=$(sed -n 's/^ *"sdm": "\(.*\)",*$/\1/p' "$MANIFEST" | head -n1)
+SDMDIR="$TRACK/raw/$SDM"
+[[ -n $SDM && -f $SDMDIR/ASDM.xml && -f $SDMDIR/Main.xml ]] || {
+    say "raw/${SDM:-<unknown>} is missing or lacks ASDM.xml/Main.xml"; finish 11; }
+SDM_BYTES=$(sed -n 's/^ *"bytes": \([0-9]*\),*$/\1/p' "$MANIFEST" | head -n1)
+say "SDM $SDM: ${SDM_BYTES:-unknown} bytes (verified by stage_local)"
 
 # --- fresh work directory per attempt (stale MS/context/splits break re-runs, plan §2) --
 WORK="$IDIR/work"
