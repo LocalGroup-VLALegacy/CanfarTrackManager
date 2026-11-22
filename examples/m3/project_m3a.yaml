@@ -1,0 +1,39 @@
+# M3 real-scheduler check A (headless controller on skaha/base-notebook, placeholder calibrate workers):
+# real stage_local on the real IC10 SDM (directory and tar), a corrupt SDM, an OOM-killed calibrate worker,
+# the disk gate (quota 0.2 TB vs ~133 GB per active track) and a controller handoff (relaunch_after_d ~7 min).
+#   bash scripts/submit_controller.sh examples/m3/project_m3a.yaml
+project:
+  name: m3a
+  root: /arc/projects/VVINGS/vla-calib-mwe/runs/m3a
+  session_prefix: tm
+
+inputs: {source: arc_path}
+
+pipeline:
+  image: images.canfar.net/skaha/base-notebook:latest
+  repo: /arc/home/ekoch/vla_processing/ReductionPipeline
+  source_configs: /arc/projects/VVINGS/vla-calib-mwe/config/ic10/pipeline
+  worker: {cmd: python3, args: trackmanager/worker.py}      # placeholder calibrate
+  stage_worker: {cmd: python3}
+  disk_factor: 8.0
+  resources:
+    default: {cores: null, ram: null}                       # flexible
+    by_config: {X: {cores: 1, ram: 1}}                      # the OOM track: a 1 GB request
+
+review: {enabled: false}
+
+controller:
+  image: images.canfar.net/skaha/base-notebook:latest
+  poll_s: 60
+  grace_s: 600
+  auto_retry: 0
+  relaunch_after_d: 0.005
+  max_workers: {calibrate: 3, stage: 2}
+  quota_tb: 0.2
+  min_free_tb: 0
+
+tracks:
+  - {eb: m3a-dir, config: D, path: /arc/projects/VVINGS/ic10_d_testcase/test_track/20A-346.sb42440562.eb42455346.59786.372811249996, mode: ok, sleep_s: 420}
+  - {eb: m3a-tar, config: D, path: /arc/projects/VVINGS/ic10_d_testcase/ic10_d_sdm.tar, mode: ok, sleep_s: 120}
+  - {eb: m3a-bad, config: D, path: /arc/projects/VVINGS/vla-calib-mwe/runs/m3-inputs/bad-sdm/20A-346.sb1.eb1.1.1, mode: ok, sleep_s: 60}
+  - {eb: m3a-oom, config: X, path: /arc/projects/VVINGS/ic10_d_testcase/test_track/20A-346.sb42440562.eb42455346.59786.372811249996, mode: oom}
