@@ -62,14 +62,21 @@ import time
 from pathlib import Path
 
 from . import config as projconfig
-from . import inbox, qa
+from . import inbox, qa, scheduler
 from . import jobs as joblog
-from .stages import calibrate, promote
+from . import states as S
+from .stages import calibrate, promote, qa_publish
 from .backend import LIVE, make_backend
 from .store import Root, age_s, append_jsonl, iso, log, read_json, write_json
 
 REPO = Path(__file__).resolve().parent.parent
-SETTLED = ("DONE", "SKIPPED", "AWAITING_DECISION", "AWAITING_REVIEW")
+# What the cycle does for a track, by (stage, activity) or by stage. Submitting is separate:
+# queued tracks of a worker stage go through SUBMITTERS once the scheduler admits them.
+# M3 and M6 register `stage_local` and `fetch_raw` under STAGING.
+HANDLERS = {(S.CALIBRATING, S.RUNNING): calibrate.reconcile,
+            (S.CALIBRATING, S.PUBLISHING): qa_publish.run,
+            S.PROMOTING: promote.run}
+SUBMITTERS = {S.CALIBRATING: calibrate.submit}
 
 
 def cert_info():
@@ -107,9 +114,9 @@ class Controller:
         self.workers: dict = {}
 
     # ---- database helpers ------------------------------------------------
-    def event(self, eb, frm, to, reason):
+    def event(self, eb, frm, to, reason, **extra):
         append_jsonl(self.r.events, {"ts": iso(), "actor": self.me, "eb": eb,
-                                     "from": frm, "to": to, "reason": reason})
+                                     "from": frm, "to": to, "reason": reason, **extra})
 
     def job_row(self, eb, n, k, att, **fields):
         ids = att.get("ids") or []
@@ -121,7 +128,7 @@ class Controller:
         st = read_json(self.r.state(eb))
         if st is None:
             st = {"eb": eb, "stage": "NEW", "iteration": 1, "attempt": 0, "hold": False}
-            self.set_stage(st, "QUEUED", "discovered from config")
+            self.set_stage(st, *S.initial_stage(self.cfg), "discovered from config")
         return st
 
     def track_ids(self):
@@ -149,24 +156,56 @@ class Controller:
         """science_dir / products_dir for one EB (relative settings are taken from the root)."""
         return self.base_dir(key) / eb
 
-    def worker_limit(self):
-        """The calibrate worker limit, re-read from project.yaml every cycle (a bad edit keeps the
-        previous limits)."""
-        return int(self.cfg.reload_limits().max_workers.get("calibrate", 0))
-
     def is_worker_name(self, name):
         return bool(name) and name.startswith(f"{self.prefix}{self.tag}-") \
             and not re.search(r"-ctrl-\d+$", name)
 
-    def set_stage(self, st, to, reason):
-        frm = st["stage"]
-        st.update(stage=to, updated=iso(), detail=reason)
-        if to == "QUEUED":
+    def set_stage(self, st, to, activity, reason):
+        """Move a track to stage `to` (and activity within it). The edge must be in the table
+        (states.TRANSITIONS); a brand-new track (stage NEW) may enter at any stage."""
+        frm, frm_act = st["stage"], st.get("activity")
+        if frm != "NEW":
+            S.check(frm, to)
+        S.check_activity(to, activity)
+        st.update(stage=to, activity=activity, updated=iso(), detail=reason)
+        for key in ("queue_position", "blocked_by"):
+            st.pop(key, None)
+        if activity == S.QUEUED:
             st["queued_at"] = st["updated"]
-        st.pop("queue_position", None)
         write_json(self.r.state(st["eb"]), st)
-        self.event(st["eb"], frm, to, reason)
-        log(f"{st['eb']}: {frm} -> {to} ({reason})")
+        self.event(st["eb"], frm, to, reason, from_activity=frm_act, activity=activity)
+        log(f"{st['eb']}: {frm}{'/' + frm_act if frm_act else ''} -> {to}{'/' + activity if activity else ''} ({reason})")
+
+    def set_activity(self, st, activity, reason):
+        """Progress within the current stage (queued -> running -> publishing): no table edge."""
+        stage, frm_act = st["stage"], st.get("activity")
+        S.check_activity(stage, activity)
+        st.update(activity=activity, updated=iso(), detail=reason)
+        for key in ("queue_position", "blocked_by"):
+            st.pop(key, None)
+        if activity == S.QUEUED:
+            st["queued_at"] = st["updated"]
+        write_json(self.r.state(st["eb"]), st)
+        self.event(st["eb"], stage, stage, reason, from_activity=frm_act, activity=activity)
+        log(f"{st['eb']}: {stage}/{frm_act} -> {stage}/{activity} ({reason})")
+
+    def fail(self, st, reason, failure_class=None):
+        """Any working stage -> AWAITING_DECISION (reason failed). Remembers where it failed, so
+        `retry` goes back there: a failed promotion retries promotion, a failed publish retries
+        publishing, a failed run is queued again."""
+        st.update(failed_from=st["stage"], failed_activity=st.get("activity"), reason="failed",
+                  failure_class=failure_class)
+        self.set_stage(st, S.AWAITING_DECISION, None, reason)
+
+    def retry(self, st, by):
+        """AWAITING_DECISION (reason failed) -> the stage it failed in."""
+        to = st.get("failed_from") or S.CALIBRATING
+        act = st.get("failed_activity")
+        if act == S.RUNNING or (act is None and to in S.ACTIVITIES):
+            act = S.QUEUED  # a failed run is submitted again; a failed publish is just retried
+        for key in ("failed_from", "failed_activity", "reason", "failure_class", "publish_failures"):
+            st.pop(key, None)
+        self.set_stage(st, to, act if to in S.ACTIVITIES else None, f"operator retry ({by})")
 
     def session_name(self, eb, n, k):
         clean = re.sub(r"[^a-z0-9-]", "-", eb.lower()).strip("-")
@@ -234,24 +273,25 @@ class Controller:
             self.load_state(e["eb"])
         inbox.apply(self)
         states = {eb: self.load_state(eb) for eb in self.track_ids()}
-        for eb, st in states.items():
-            if st["stage"] == "RUNNING":
-                calibrate.reconcile(self, st)
-            elif st["stage"] == "PROMOTING":  # a controller stopped part way through promotion
-                promote.run(self, st)
+        for st in states.values():
+            handler = HANDLERS.get((st["stage"], st.get("activity"))) or HANDLERS.get(st["stage"])
+            if handler:
+                handler(self, st)
         self.schedule(states)
         self.write_summaries(states)
         if not self.settled(states):
             self.maybe_handoff()
 
     def schedule(self, states):
-        """Submit QUEUED tracks while worker slots are free; the rest wait in the database."""
-        limit = self.worker_limit()
-        running = [st for st in states.values() if st["stage"] == "RUNNING"]
+        """Submit queued tracks that the scheduler admits; the rest wait in the database with
+        their queue position and the gate that blocks them (trackmanager/scheduler.py)."""
+        limits = self.cfg.reload_limits()
+        tracks = list(states.values())
         expected = set()
-        for st in running:
-            att = read_json(self.r.attempt(st["eb"], st.get("iteration", 1), st["attempt"])) or {}
-            expected.add(att.get("name"))
+        for st in tracks:
+            if scheduler.is_running(st):
+                att = read_json(self.r.attempt(st["eb"], st.get("iteration", 1), st["attempt"])) or {}
+                expected.add(att.get("name"))
         orphans = {s["id"]: s["name"] for s in self.sessions
                    if s["status"] in LIVE and self.is_worker_name(s.get("name"))
                    and s["name"] not in expected}
@@ -259,31 +299,40 @@ class Controller:
             self.event("-", "workers", "orphan", f"live worker session {sid} ({orphans[sid]}) is not "
                        "a current attempt in the database; it takes a slot until it ends")
         self.orphans = set(orphans)
-        in_use = len(running) + len(orphans)
-        queue = sorted((st for st in states.values() if st["stage"] == "QUEUED" and not st.get("hold")),
-                       key=lambda st: (-int(self.spec(st).get("priority", 0)),
-                                       st.get("queued_at") or st.get("updated") or "", st["eb"]))
-        waiting, submitted = [], 0
-        for st in queue:
-            if in_use < limit:
-                calibrate.submit(self, st)
-                in_use += 1
-                submitted += 1
-            else:
-                waiting.append(st)
-        for pos, st in enumerate(waiting, 1):
-            if st.get("queue_position") != pos:
-                st["queue_position"] = pos
+        # Orphans are counted against the calibrate kind: it is the only worker kind with a
+        # name-prefix match until a second kind needs its own segment in the session name.
+        plan = scheduler.plan(tracks, limits, {"calibrate": len(orphans)},
+                              priority=lambda st: self.spec(st).get("priority", 0))
+        submitted = 0
+        for st in plan.submit:
+            submit = SUBMITTERS.get(st["stage"])
+            if submit is None:  # a worker stage whose handler is not written yet
+                plan.waiting[st["eb"]] = {"position": len(plan.waiting) + 1,
+                                          "blocked_by": f"no handler for {st['stage']} in this build"}
+                continue
+            submit(self, st)
+            submitted += st["stage"] == S.CALIBRATING
+        for st in tracks:
+            w = plan.waiting.get(st["eb"])
+            want = (w["position"], w["blocked_by"]) if w else (None, None)
+            if (st.get("queue_position"), st.get("blocked_by")) != want:
+                st.pop("queue_position", None)
+                st.pop("blocked_by", None)
+                if w:
+                    st.update(queue_position=w["position"], blocked_by=w["blocked_by"])
                 write_json(self.r.state(st["eb"]), st)
-        if waiting:
-            log(f"{len(waiting)} track(s) queued; {in_use}/{limit} worker slots in use")
-        self.workers = {"limit": limit, "in_use": in_use, "running_tracks": len(running) + submitted,
-                        "orphans": sorted(orphans), "queued": len(waiting),
-                        "held": sum(st["stage"] == "QUEUED" and bool(st.get("hold")) for st in states.values())}
+        if plan.waiting:
+            log(f"{len(plan.waiting)} track(s) queued; {plan.in_use.get('calibrate', 0)}/"
+                f"{limits.max_workers.get('calibrate', 0)} calibrate slots in use")
+        running = sum(scheduler.is_running(st) for st in tracks if st["stage"] == S.CALIBRATING)
+        self.workers = {"limit": limits.max_workers.get("calibrate", 0), "limits": limits.max_workers,
+                        "max_sessions": limits.max_sessions, "in_use": plan.in_use.get("calibrate", 0),
+                        "running_tracks": running, "orphans": sorted(orphans),
+                        "queued": len(plan.waiting), "held": plan.held}
 
     @staticmethod
     def settled(states):
-        return bool(states) and all(st["stage"] in SETTLED for st in states.values())
+        return bool(states) and all(st["stage"] in S.SETTLED for st in states.values())
 
     def cancel_successor(self, reason):
         """Destroy a requested successor that is no longer needed (default on a normal finish)."""
@@ -319,8 +368,9 @@ class Controller:
                                     "workers": self.workers,
                                     "qa_home_url": qa.qa_url(self, self.base_dir("products_dir") / "index.html"),
                                     "ebs": {eb: {k: st.get(k) for k in
-                                                 ("stage", "iteration", "attempt", "detail", "updated", "hold",
-                                                  "hold_reason", "queued_at", "queue_position", "qa_url")}
+                                                 ("stage", "activity", "iteration", "attempt", "detail", "updated",
+                                                  "hold", "hold_reason", "reason", "queued_at", "queue_position",
+                                                  "blocked_by", "qa_url")}
                                             for eb, st in states.items()}})
         try:
             qa.write_index(self, states)
@@ -399,7 +449,7 @@ def main(argv=None):
     while True:
         ctl.cycle()
         stages = {st["stage"] for st in (read_json(ctl.r.summary) or {}).get("ebs", {}).values()}
-        settled = stages and stages <= set(SETTLED)
+        settled = stages and stages <= S.SETTLED
         if (a.max_cycles and ctl.cycle_n >= a.max_cycles) or (settled and not cfg.controller.keep_running):
             log(f"stopping after cycle {ctl.cycle_n}: stages {sorted(stages)}")
             if cfg.controller.cancel_successor_on_finish:

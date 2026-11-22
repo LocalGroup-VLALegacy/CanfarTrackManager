@@ -27,6 +27,10 @@ def write_if_changed(path, text):
     os.replace(tmp, path)
 
 
+class QaAccessError(OSError):
+    """setfacl could not give qa.group read access."""
+
+
 def qa_dir(ctl, eb, n):
     """<products_dir>/<EB>/iter_<n>/: where the worker writes this iteration's products."""
     return ctl.out_dir("products_dir", eb) / f"iter_{n}"
@@ -42,7 +46,8 @@ def qa_url(ctl, path):
 
 def grant_qa_read(ctl, path, recursive=True):
     """Give qa.group read (and directory traverse) on a QA folder, as Storage Management's
-    "Read" does: a POSIX ACL entry, plus a default entry so files added later inherit it."""
+    "Read" does: a POSIX ACL entry, plus a default entry so files added later inherit it.
+    Raises QaAccessError if setfacl fails."""
     group = ctl.qa("group")
     if not group or not Path(path).exists():
         return True
@@ -57,8 +62,7 @@ def grant_qa_read(ctl, path, recursive=True):
             err = repr(e)
         if r is None or r.returncode != 0:
             err = r.stderr.strip() if r is not None else err
-            ctl.event("-", "qa_access", "failed", f"{' '.join(cmd)}: {err}")
-            return False
+            raise QaAccessError(f"{' '.join(cmd)}: {err}")
     return True
 
 

@@ -5,7 +5,8 @@ from pathlib import Path
 
 from .. import qa
 from ..store import iso, read_json, write_json
-from . import calibrate
+from .. import retention
+from .. import states as S
 
 
 def run(ctl, st):
@@ -43,12 +44,12 @@ def run(ctl, st):
         write_json(prod / "provenance.json", prov)
         write_json(prod.parent / "approved.json", prov)  # marks the approved iteration
     except OSError as e:
-        ctl.set_stage(st, "AWAITING_DECISION", f"promotion of iteration {n} failed: {e}")
+        ctl.fail(st, f"promotion of iteration {n} failed: {e}")
         return
     if moved:
         ctl.event(eb, "retention", "promoted", f"iter_{n}: {len(moved)} split(s) -> {sci}; "
                    f"approved QA {prod}")
-    calibrate.trim_work(ctl, eb, n)
+    retention.trim_work(ctl, eb, n)
     raw = ctl.r.track(eb) / "raw"
     if not ctl.retention("keep_raw_after_done") and (raw.exists() or raw.is_symlink()):
         if raw.is_symlink():
@@ -65,4 +66,4 @@ def run(ctl, st):
     att = read_json(ctl.r.attempt(eb, n, k)) if k else None
     if att:
         ctl.job_row(eb, n, k, att, promoted=st["completed_at"])
-    ctl.set_stage(st, "DONE", f"iteration {n} promoted to {sci}")
+    ctl.set_stage(st, S.DONE, None, f"iteration {n} promoted to {sci}")

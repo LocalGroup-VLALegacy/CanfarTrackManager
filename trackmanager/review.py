@@ -17,7 +17,7 @@ def apply(ctl, st, d):
     eb, n, by = st["eb"], st.get("iteration", 1), d.get("by", "?")
     if d.get("iteration") is not None and int(d["iteration"]) != n:
         return f"ignored: decision for iteration {d['iteration']}, track is at iteration {n}"
-    if st["stage"] != "AWAITING_REVIEW":
+    if st["stage"] != states.AWAITING_REVIEW:
         return f"ignored: track is {st['stage']}, not AWAITING_REVIEW"
     inputs = d.get("inputs") or {}
     bad = sorted(set(inputs) - set(states.INPUT_FILES))
@@ -42,7 +42,7 @@ def apply(ctl, st, d):
     if st.get("hold_reason") in ("manual_review", "help_requested"):
         st.update(hold=False, hold_reason=None)  # the reviewer has now decided
     if d["action"] == "pass":
-        ctl.set_stage(st, "PROMOTING", f"iteration {n} passed review ({by})")
+        ctl.set_stage(st, states.PROMOTING, None, f"iteration {n} passed review ({by})")
         promote.run(ctl, st)
         return "applied"
     nxt = ctl.r.inputs(eb, n + 1)
@@ -52,6 +52,6 @@ def apply(ctl, st, d):
         tmp.write_text(text)
         os.replace(tmp, nxt / name)
     st.update(iteration=n + 1, attempt=0)
-    ctl.set_stage(st, "QUEUED", f"restart requested by {by}: iteration {n + 1} "
+    ctl.set_stage(st, states.CALIBRATING, states.QUEUED, f"restart requested by {by}: iteration {n + 1} "
                                  f"with {', '.join(sorted(inputs)) or 'no new inputs'}")
     return "applied"

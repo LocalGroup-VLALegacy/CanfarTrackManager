@@ -3,13 +3,12 @@
 Each function takes the controller (`ctl`) for its database, backend, config and event log."""
 from __future__ import annotations
 import json
-import shutil
-from pathlib import Path
 
-from .. import qa
+from .. import qa, retention
+from .. import states as S
 from ..backend import LIVE, TERMINAL
 from ..store import age_s, create_json, iso, log, read_json, write_json
-from . import promote, qa_publish
+from . import qa_publish
 
 
 def classify(status, run, platform_text):
@@ -36,7 +35,7 @@ def submit(ctl, st):
     lock.unlink(missing_ok=True)  # every earlier attempt is terminal by now
     ctl.r.inputs(eb, n).mkdir(parents=True, exist_ok=True)
     if k == 1 and n > 1:
-        drop_previous_work(ctl, eb, n - 1)
+        retention.drop_previous_work(ctl, eb, n - 1)
     res = ctl.cfg.resources(spec)
     env = {"TM_ROOT": str(ctl.r.path), "EB": eb, "ITERATION": str(n), "ATTEMPT": str(k),
            "MODE": spec.get("mode", "ok"), "SLEEP_S": str(spec.get("sleep_s", 60)),
@@ -54,10 +53,10 @@ def submit(ctl, st):
     except FileExistsError:
         log(f"{eb}: iter_{n}/attempt_{k}.json already exists; reconciling it instead of resubmitting")
         st["attempt"] = k
-        ctl.set_stage(st, "RUNNING", f"found existing iteration {n} attempt {k}")
+        ctl.set_activity(st, S.RUNNING, f"found existing iteration {n} attempt {k}")
         return
     st["attempt"] = k
-    ctl.set_stage(st, "RUNNING", f"submitting iteration {n} attempt {k}")
+    ctl.set_activity(st, S.RUNNING, f"submitting iteration {n} attempt {k}")
     rq = att["request"]
     try:
         ids = ctl.backend.create(att["name"], rq["image"], rq["cmd"], rq["args"], env,
@@ -76,40 +75,6 @@ def submit(ctl, st):
                  cores=rq["cores"], ram=rq["ram"], image=rq["image"])
 
 
-def drop_previous_work(ctl, eb, prev):
-    """retention.drop_prev_iter_work: a restart replaces iteration <prev>, so its splits/ and
-    any work/ go; its products/, inputs/, logs/ and review.json stay as the record."""
-    if not ctl.retention("drop_prev_iter_work"):
-        return
-    idir, res = ctl.r.iter_dir(eb, prev), read_json(ctl.r.result(eb, prev))
-    if not (res and res.get("ok") and Path(res.get("qa_dir") or qa.qa_dir(ctl, eb, prev)).is_dir()):
-        return
-    gone = [d.name for d in intermediate_dirs(idir) + [idir / "splits"] if d.exists()]
-    for name in gone:
-        shutil.rmtree(idir / name, ignore_errors=True)
-    if gone:
-        ctl.event(eb, "retention", "dropped", f"iter_{prev}: deleted {', '.join(gone)} "
-                   "(replaced by a restart; products kept)")
-
-
-def intermediate_dirs(idir):
-    """work/ plus work and products dirs that failed attempts left aside (*.stale.*)."""
-    return [idir / "work"] + sorted(idir.glob("work.stale.*")) + sorted(idir.glob("products.stale.*"))
-
-
-def trim_work(ctl, eb, n):
-    """retention.trim_work, after a verified run. The worker trims too; this catches a worker
-    that was killed after writing result.json and covers older workers."""
-    if not ctl.retention("trim_work"):
-        return
-    idir = ctl.r.iter_dir(eb, n)
-    gone = [d.name for d in intermediate_dirs(idir) if d.exists()]
-    for name in gone:
-        shutil.rmtree(idir / name, ignore_errors=True)
-    if gone:
-        ctl.event(eb, "retention", "trimmed", f"iter_{n}: deleted {', '.join(gone)}")
-
-
 def reconcile(ctl, st):
     eb, n, k = st["eb"], st.get("iteration", 1), st["attempt"]
     att = read_json(ctl.r.attempt(eb, n, k))
@@ -123,7 +88,7 @@ def reconcile(ctl, st):
             att["ids"] = [sess["id"]]
             att["adopted"] = True
             write_json(ctl.r.attempt(eb, n, k), att)
-            ctl.event(eb, "RUNNING", "RUNNING", f"adopted session {sess['id']} by name "
+            ctl.event(eb, S.CALIBRATING, S.CALIBRATING, f"adopted session {sess['id']} by name "
                        "after an unconfirmed create()")
             ctl.job_row(eb, n, k, att, status="adopted")
     status = sess["status"] if sess else None
@@ -181,13 +146,10 @@ def verify(ctl, st, att):
         att["outcome"] = "completed"
         write_json(ctl.r.attempt(eb, n, k), att)
         ctl.job_row(eb, n, k, att, status="verified", failure_class="none", **common)
-        trim_work(ctl, eb, n)
+        retention.trim_work(ctl, eb, n)
+        ctl.set_activity(st, S.PUBLISHING, f"iteration {n} attempt {k} verified "
+                                           f"(platform: {common['platform_status']})")
         qa_publish.run(ctl, st)
-        to = "AWAITING_REVIEW" if ctl.cfg.review.enabled else "PROMOTING"
-        ctl.set_stage(st, to, f"iteration {n} attempt {k} verified "
-                               f"(platform: {common['platform_status']})")
-        if to == "PROMOTING":
-            promote.run(ctl, st)
         return
     text = ""
     for f in ("events.txt", "session_info.json", "session.log"):
@@ -199,7 +161,6 @@ def verify(ctl, st, att):
     ctl.job_row(eb, n, k, att, status="failed_verification", failure_class=fclass, **common)
     live_same_name = any(s["status"] in LIVE for s in ctl.by_name(att["name"]))
     if k <= ctl.cfg.controller.auto_retry and not live_same_name:
-        ctl.set_stage(st, "QUEUED", f"iteration {n} attempt {k} {fclass}; automatic retry")
+        ctl.set_activity(st, S.QUEUED, f"iteration {n} attempt {k} {fclass}; automatic retry")
     else:
-        ctl.set_stage(st, "AWAITING_DECISION",
-                       f"iteration {n} attempt {k} {fclass}; operator decision needed")
+        ctl.fail(st, f"iteration {n} attempt {k} {fclass}; operator decision needed", fclass)

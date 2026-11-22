@@ -153,13 +153,14 @@ def test_pending_successor_is_cancelled_on_finish(tmp_path):
 
 
 def max_concurrent(root):
-    """Replay events.jsonl: the most tracks in RUNNING at once, and the order they started."""
+    """Replay events.jsonl: the most tracks running a calibrate worker at once, and the order
+    they started."""
     running, peak, order = set(), 0, []
     for e in read_jsonl(root / "events.jsonl"):
-        if e["to"] == "RUNNING" and e["from"] == "QUEUED":
+        if e.get("from_activity") == "queued" and e.get("activity") == "running":
             running.add(e["eb"])
             order.append(e["eb"])
-        elif e["from"] == "RUNNING" and e["to"] != "RUNNING":
+        elif e.get("from_activity") == "running" and e.get("activity") != "running":
             running.discard(e["eb"])
         peak = max(peak, len(running))
     return peak, order
@@ -179,7 +180,7 @@ def test_worker_limit_holds_extra_tracks_in_queue(tmp_path):
     p.communicate(timeout=90)
     assert queued_seen and queued_seen["workers"]["limit"] == 2 and queued_seen["workers"]["in_use"] == 2
     positions = sorted(st["queue_position"] for st in queued_seen["ebs"].values()
-                       if st["stage"] == "QUEUED")
+                       if st.get("activity") == "queued")
     assert positions == list(range(1, queued_seen["workers"]["queued"] + 1))
     assert set(stages(root).values()) == {"DONE"}
     peak, order = max_concurrent(root)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from . import review
+from . import states
 from .states import REVIEW_ACTIONS
 from .store import iso, log, read_json, write_json
 
@@ -24,15 +25,19 @@ def apply(ctl):
                 spec = {k: v for k, v in (d.get("spec") or {}).items() if k != "eb"}
                 st = {"eb": eb, "stage": "NEW", "attempt": 0, "hold": False, "spec": spec,
                       "requested_by": d.get("by", "?")}
-                ctl.set_stage(st, "QUEUED", f"requested by {d.get('by', '?')}")
+                ctl.set_stage(st, *states.initial_stage(ctl.cfg), f"requested by {d.get('by', '?')}")
                 result = "applied"
         elif st and action in REVIEW_ACTIONS:
             result = review.apply(ctl, st, d)
-        elif st and action == "retry" and st["stage"] == "AWAITING_DECISION":
-            ctl.set_stage(st, "QUEUED", f"operator retry ({d.get('by', '?')})")
+        elif st and action == "retry" and st["stage"] == states.AWAITING_DECISION:
+            ctl.retry(st, d.get("by", "?"))
             result = "applied"
-        elif st and action == "skip" and st["stage"] == "AWAITING_DECISION":
-            ctl.set_stage(st, "SKIPPED", f"operator skip ({d.get('by', '?')})")
+        elif st and action == "skip" and st["stage"] in (states.AWAITING_DECISION, states.AWAITING_DATA):
+            ctl.set_stage(st, states.SKIPPED, None, f"operator skip ({d.get('by', '?')})")
+            result = "applied"
+        elif st and action == "needs_manual" and st["stage"] == states.AWAITING_DECISION:
+            ctl.set_stage(st, states.NEEDS_MANUAL, None, f"operator: needs manual work ({d.get('by', '?')}"
+                          + (f": {d['notes']})" if d.get("notes") else ")"))
             result = "applied"
         elif st and action in ("hold", "release"):
             st["hold"] = action == "hold"
