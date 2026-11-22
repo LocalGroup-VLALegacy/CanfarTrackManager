@@ -3,6 +3,7 @@
 Each test runs the controller as a subprocess, as in test_fake_backend.py. Tracks name an input
 (`path`), so they start at STAGING/queued; the placeholder calibrate worker takes over after
 staging verifies."""
+import json
 import os
 import signal
 import subprocess
@@ -286,3 +287,62 @@ def test_without_a_quota_nothing_is_held_back(tmp_path):
     controller(cfg, root)
     assert set(stages(root).values()) == {"DONE"}
     assert read_json(root / "state" / "summary.json")["disk"]["quota_tb"] is None
+
+
+def review_ready(tmp_path, eb="p", **kw):
+    """A tracked EB staged from a directory and calibrated by the placeholder, waiting for review."""
+    sdm = sdm_in(tmp_path)
+    cfg, root = project(tmp_path, [{"eb": eb, "path": str(sdm), "mode": "ok", "sleep_s": 1}], review=True, **kw)
+    controller(cfg, root)
+    assert stages(root) == {eb: "AWAITING_REVIEW"}
+    return cfg, root, sdm
+
+
+def test_provenance_cites_the_staged_raw_data_the_versions_and_the_image(tmp_path):
+    cfg, root, sdm = review_ready(tmp_path)
+    res = root / "tracks" / "p" / "iter_1" / "result.json"            # what the real worker adds
+    data = read_json(res)
+    data.update(casa_version="PIPELINE 6.6.6.18", pipeline_version="2025.1.0.37",
+                casa_home="casa-6.6.6-18-pipeline-2025.1.0.37-py3.10.el8", reduction_pipeline_sha="abc123")
+    res.write_text(json.dumps(data))
+    digest = "sha256:" + "ab" * 32
+    (root / "tracks" / "p" / "iter_1" / "logs" / "attempt_1" / "session_info.json").write_text(
+        json.dumps({"image": f"images.canfar.net/x/y@{digest}"}))
+    decide(root, "p", "pass")
+    controller(cfg, root)
+    assert stages(root) == {"p": "DONE"}
+    prov = read_json(root / "science" / "p" / "provenance.json")
+    assert (prov["casa_version"], prov["pipeline_version"], prov["reduction_pipeline_sha"]) == (
+        "PIPELINE 6.6.6.18", "2025.1.0.37", "abc123")
+    assert prov["image"] == "local" and prov["image_digest"] == digest
+    man = read_json(root / "tracks" / "p" / "stage" / "manifest.json")
+    assert prov["raw"]["sdm"] == sdm.name and prov["raw"]["bytes"] == man["bytes"] and prov["raw"]["mode"] == "symlink"
+    assert prov["raw"]["input_path"] == str(sdm)
+    # raw/ is gone (the operator's SDM is untouched: raw held only a link) but the manifest outlives it
+    assert not (root / "tracks" / "p" / "raw").exists() and (sdm / "Main.xml").exists()
+    assert man["ok"] and read_json(root / "state" / "p.json")["raw_deleted_at"]
+
+
+def test_raw_that_will_not_delete_keeps_the_track_in_promoting_then_asks_the_operator(tmp_path):
+    cfg, root, sdm = review_ready(tmp_path)
+    stuck = root / "tracks" / "p" / "raw" / "stuck"
+    stuck.mkdir()
+    (stuck / "file").write_text("x")
+    stuck.chmod(0o500)                                  # its file cannot be unlinked
+    try:
+        decide(root, "p", "pass")
+        controller(cfg, root)
+        st = read_json(root / "state" / "p.json")
+        assert (st["stage"], st["failed_from"]) == ("AWAITING_DECISION", "PROMOTING")
+        assert "could not be deleted" in st["detail"] and not st.get("raw_deleted_at")
+        assert sum(e["to"] == "raw_delete_failed" for e in events(root)) == 5
+        assert (root / "science" / "p" / "provenance.json").exists()       # the rest of promotion is done
+        stuck.chmod(0o700)
+        decide(root, "p", "retry")
+        controller(cfg, root)
+        st = read_json(root / "state" / "p.json")
+        assert st["stage"] == "DONE" and st["raw_deleted_at"] and "raw_delete_failures" not in st
+        assert not (root / "tracks" / "p" / "raw").exists()
+    finally:
+        if stuck.exists():
+            stuck.chmod(0o700)             # so pytest can clean up after a failed assertion

@@ -180,11 +180,16 @@ rm -rf "$IDIR/splits"; mkdir -p "$IDIR/splits"
 for s in "${SPLITS[@]}"; do mv "$WORK/$s" "$IDIR/splits/$s" || { say "could not move $s out of work/"; finish 20; }; done
 cp -p "$WORK"/casa-*.log "$LOGDIR/" 2>/dev/null || true
 
+# Versions for provenance.json: from CASA's own log banner, the reduction pipeline checkout's commit.
+vers() { tr -cd 'A-Za-z0-9._ -' <<< "$1" | head -c 80; }
+CASA_VERSION=$(vers "$(grep -h -m1 -o 'CASA Version .*' "$LOGDIR"/casa-*.log 2>/dev/null | head -n1 | sed 's/^CASA Version //')")
+PIPELINE_VERSION=$(vers "$(grep -h -m1 -o 'Pipeline version [0-9.]*' "$LOGDIR"/casa-*.log 2>/dev/null | head -n1 | sed 's/^Pipeline version //')")
+RP_SHA=$(vers "$(git -C "$PIPELINE" rev-parse HEAD 2>/dev/null)")
 json_outs=$(printf '"%s",' "${outs[@]}"); json_outs="[${json_outs%,}]"
 json_in=""; for f in "${!INPUT_SHA[@]}"; do json_in+="\"$f\": \"${INPUT_SHA[$f]}\", "; done
-printf '{"ok": true, "eb": "%s", "iteration": %s, "attempt": %s, "session": "%s", "sdm": "%s", "qa_dir": "%s", "inputs": {%s}, "outputs": %s, "qaplotter": "%s", "finished": "%s"}\n' \
+printf '{"ok": true, "eb": "%s", "iteration": %s, "attempt": %s, "session": "%s", "sdm": "%s", "qa_dir": "%s", "inputs": {%s}, "outputs": %s, "qaplotter": "%s", "casa_version": "%s", "pipeline_version": "%s", "casa_home": "%s", "reduction_pipeline_sha": "%s", "finished": "%s"}\n' \
     "$EB" "$ITERATION" "$ATTEMPT" "$SID" "$SDM" "$QA" "${json_in%, }" "$json_outs" \
-    "$(cat "$QA_DEPS/QAPLOTTER_SHA" 2>/dev/null)" "$(now)" > "$IDIR/partial-result.json"
+    "$(cat "$QA_DEPS/QAPLOTTER_SHA" 2>/dev/null)" "$CASA_VERSION" "$PIPELINE_VERSION" "$(basename "$CASA_HOME")" "$RP_SHA" "$(now)" > "$IDIR/partial-result.json"
 mv "$IDIR/partial-result.json" "$IDIR/result.json"
 say "outputs verified, QA written; wrote result.json"
 

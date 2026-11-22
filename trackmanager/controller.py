@@ -212,7 +212,8 @@ class Controller:
         act = st.get("failed_activity")
         if act == S.RUNNING or (act is None and to in S.ACTIVITIES):
             act = S.QUEUED  # a failed run is submitted again; a failed publish is just retried
-        for key in ("failed_from", "failed_activity", "reason", "failure_class", "publish_failures"):
+        for key in ("failed_from", "failed_activity", "reason", "failure_class", "publish_failures",
+                    "raw_delete_failures"):
             st.pop(key, None)
         self.set_stage(st, to, act if to in S.ACTIVITIES else None, f"operator {action} ({by})")
 
