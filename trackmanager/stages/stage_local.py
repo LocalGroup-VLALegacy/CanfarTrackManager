@@ -22,7 +22,7 @@ from .. import states as S
 from ..backend import LIVE
 from ..store import iso, read_json, write_json
 from . import workers
-from .workers import Attempt, classify, create, platform_text, submit_session
+from .workers import Attempt, classify, create, peak_anon, platform_text, submit_session
 
 TARGET_INTENT = "OBSERVE_TARGET"
 
@@ -138,7 +138,8 @@ def verify(ctl, st, att):
                       f"raw data staged ({man['mode']}, {(man.get('bytes') or 0) / 1e9:.1f} GB, "
                       f"{len(man.get('fields') or {})} fields)")
         return
-    fclass = classify(att.get("platform_status"), run, platform_text(a))
+    fclass = classify(att.get("platform_status"), run, platform_text(a), peak_anon(a),
+                      att.get("request", {}).get("ram"))
     att["outcome"] = fclass
     write_json(a.path, att)
     a.job_row(ctl, att, status="failed_verification", failure_class=fclass, **common)

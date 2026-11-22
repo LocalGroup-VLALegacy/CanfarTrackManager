@@ -27,14 +27,32 @@ class Attempt:
         ctl.job_row(self.eb, self.iteration, self.attempt, att, **{**extra, **fields})
 
 
-def classify(status, run, platform_text):
-    """failure_class for a failed attempt (plan §3.2 job database)."""
+OOM_FRACTION = 0.8      # a killed worker whose last memory sample was this close to its request ran out of memory
+
+
+def peak_anon(a: Attempt):
+    """The worker's last sampled peak of anonymous memory, if it keeps one (calibrate_worker.sh does)."""
+    try:
+        return int((a.logs / "peak_anon_bytes").read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def classify(status, run, platform_text, peak_anon_bytes=None, ram_gb=None):
+    """failure_class for a failed attempt (plan §3.2 job database).
+
+    An OOM kill leaves no text on CANFAR (checked 2026-11-22: the events show only start-up, the
+    session log just stops, the status is plain Failed) and no run.json, because the kill is
+    SIGKILL. So `oom` is inferred: no exit code was recorded, and the worker's own last memory
+    sample reached OOM_FRACTION of what it asked for. The text match stays for platforms that do say it."""
     text = (platform_text or "").lower()
     if run and run.get("exit_code") == 0:
         return "no_output"
     if run and run.get("exit_code") not in (None, 0):
         return "failed"
     if "oomkilled" in text or "out of memory" in text:
+        return "oom"
+    if peak_anon_bytes and ram_gb and peak_anon_bytes >= OOM_FRACTION * ram_gb * 2**30:
         return "oom"
     if "deadline" in text:
         return "deadline"

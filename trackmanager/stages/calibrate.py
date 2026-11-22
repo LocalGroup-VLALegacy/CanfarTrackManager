@@ -7,7 +7,7 @@ from .. import states as S
 from ..backend import LIVE
 from ..store import iso, read_json, write_json
 from . import qa_publish
-from .workers import Attempt, classify, create, platform_text, submit_session  # noqa: F401 (classify re-exported)
+from .workers import Attempt, classify, create, peak_anon, platform_text, submit_session  # noqa: F401 (classify re-exported)
 from . import workers
 
 
@@ -74,7 +74,9 @@ def verify(ctl, st, att):
                                            f"(platform: {common['platform_status']})")
         qa_publish.run(ctl, st)
         return
-    fclass = classify(att.get("platform_status"), run, platform_text(attempt_ref(ctl, st)))
+    a = attempt_ref(ctl, st)
+    fclass = classify(att.get("platform_status"), run, platform_text(a), peak_anon(a),
+                      att.get("request", {}).get("ram"))
     att["outcome"] = fclass
     write_json(ctl.r.attempt(eb, n, k), att)
     ctl.job_row(eb, n, k, att, status="failed_verification", failure_class=fclass, **common)

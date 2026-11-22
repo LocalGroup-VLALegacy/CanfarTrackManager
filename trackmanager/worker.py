@@ -45,6 +45,17 @@ def cgroup_limits():
     return " ".join(out)
 
 
+def anon_bytes():
+    """The cgroup's anonymous memory (what calibrate_worker.sh samples), else this process's peak RSS."""
+    try:
+        for line in Path("/sys/fs/cgroup/memory.stat").read_text().splitlines():
+            if line.startswith("anon "):
+                return int(line.split()[1])
+    except (OSError, ValueError):
+        pass
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+
+
 def write_atomic(path, data):
     tmp = path.with_name(f"partial-{path.name}")
     tmp.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n")
@@ -104,7 +115,10 @@ def main():
             hog = []
             while True:
                 hog.append(bytearray(256 * 1024 * 1024))
+                for i in range(0, len(hog[-1]), 4096):
+                    hog[-1][i] = 1                      # touch every page so it counts as resident
                 say(f"allocated {len(hog) * 256} MiB")
+                (logdir / "peak_anon_bytes").write_text(str(anon_bytes()))   # like calibrate_worker.sh's sampler
                 time.sleep(0.5)
 
         steps = max(1, int(sleep_s // 30))
