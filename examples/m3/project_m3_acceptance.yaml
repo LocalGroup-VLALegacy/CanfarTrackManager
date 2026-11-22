@@ -1,5 +1,6 @@
 # M3 acceptance: 3 tracks through stage_local and real calibration (CASA 6.6.6-18 / pipeline 2025.1.0.37) to
-# AWAITING_REVIEW, two at a time, with the disk gate holding the third. All three read the same IC10 D SDM
+# AWAITING_REVIEW, two at a time (the third waits for a calibrate slot; the disk gate itself is exercised by
+# examples/m3/project_m3a.yaml). All three read the same IC10 D SDM
 # (each track's path is its own link to it), so this exercises the machinery, not data diversity.
 # Run it from a snapshot of the repo so later edits cannot touch workers that start during the ~11 h run:
 #   git worktree add <snapshot> <commit>; bash <snapshot>/scripts/submit_controller.sh <snapshot>/examples/m3/project_m3_acceptance.yaml
@@ -32,7 +33,7 @@ controller:
   auto_retry: 0
   relaunch_after_d: 0.25          # 6 h: the handoff happens while calibrations run
   max_workers: {calibrate: 2, stage: 2}
-  quota_tb: 0.3                   # ~133 GB per active track: the third waits for a slot's worth of disk
+  quota_tb: 0.3                   # ~133 GB per active track: two fit; the gate is on but the worker limit binds first
   min_free_tb: 0
 
 retention: {science_dir: science}
