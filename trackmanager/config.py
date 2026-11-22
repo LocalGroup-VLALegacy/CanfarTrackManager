@@ -52,6 +52,7 @@ class ProjectCfg:
 class InputsCfg:
     source: str = "arc_path"            # nrao_link | arc_path
     eb_list: str = "archive"            # archive | file:<csv>
+    arc_dir: str | None = None          # arc_path + archive tracks: <arc_dir>/<SDM> (directory) or <SDM>.tar
 
 
 @dc.dataclass
@@ -70,6 +71,16 @@ class ArchiveCfg:                       # used from M2 on
 class WorkerCfg:
     cmd: str = "bash"
     args: str = str(REPO / "workers" / "calibrate_worker.sh")
+
+
+@dc.dataclass
+class StageWorkerCfg:
+    """The `stage_local` worker (plan §3.4): a small flexible session, so it has no fixed request.
+    `image` defaults to controller.image, which has python 3 and tar."""
+    image: str | None = None
+    cmd: str = "python3"
+    args: str = "trackmanager/stage_worker.py"
+    size_tolerance: float = 0.05        # |bytes / TAP estimate - 1| allowed before a stage fails
 
 
 @dc.dataclass
@@ -101,6 +112,7 @@ class PipelineCfg:
     resources: ResourcesCfg = dc.field(default_factory=ResourcesCfg)
     walltime_h: float = 168
     worker: WorkerCfg = dc.field(default_factory=WorkerCfg)
+    stage_worker: StageWorkerCfg = dc.field(default_factory=StageWorkerCfg)
     env: dict = _d()                    # extra worker environment, for every track
 
 
@@ -138,7 +150,8 @@ class ControllerCfg:
     relaunch_after_d: float | None = None   # days; fractions allowed (tests use seconds / 86400)
     max_workers: dict = dc.field(default_factory=lambda: {"calibrate": 1})   # per worker stage; 0 holds the stage
     max_sessions: int | None = None     # shared cap on live worker sessions across stages
-    min_free_tb: float | None = None    # shared disk gate (M3)
+    quota_tb: float | None = None       # project space allocation; None turns the disk gate off
+    min_free_tb: float | None = None    # the gate keeps this much of quota_tb unreserved
     auto_retry: int = 1
     keep_running: bool = False          # stay up when every track has settled
     cancel_successor_on_finish: bool = True
@@ -160,7 +173,8 @@ class TrackCfg:
     eb: str = ""
     priority: int = 0
     config: str | None = None           # array config, selects pipeline.resources.by_config
-    path: str | None = None             # SDM directory or NRAO tar (becomes the worker's TAR)
+    path: str | None = None             # SDM directory or NRAO tar, staged by stage_local
+    size_gb: float | None = None        # SDM size when there is no TAP estimate (disk gate)
     env: dict = _d()
     mode: str | None = None
     sleep_s: float | None = None
@@ -176,6 +190,11 @@ class Limits:
     max_workers: dict
     max_sessions: int | None
     min_free_tb: float | None
+    quota_tb: float | None = None
+    disk_factor: float = 8.0
+
+
+DEFAULT_STAGE_WORKERS = 4               # used when controller.max_workers has no `stage` entry
 
 
 @dc.dataclass
@@ -215,6 +234,25 @@ class ProjectConfig:
     def track_specs(self) -> list[dict]:
         return [t.spec() for t in self.tracks]
 
+    def stage_worker_args(self) -> str:
+        a = Path(self.pipeline.stage_worker.args)
+        return str(a if a.is_absolute() else REPO / a)
+
+    def stage_image(self) -> str:
+        return self.pipeline.stage_worker.image or self.controller.image
+
+    def input_path(self, spec: dict, sdm: str | None = None) -> Path | None:
+        """Where stage_local finds this track's SDM or tar: the track's own `path`, else
+        <inputs.arc_dir>/<sdm> (a directory) or <sdm>.tar. None if neither is configured."""
+        if spec.get("path"):
+            return self.resolve(spec["path"])
+        sdm = sdm or spec.get("sdm")
+        if not (self.inputs.arc_dir and sdm):
+            return None
+        base = self.resolve(self.inputs.arc_dir)
+        tar = base / f"{sdm}.tar"
+        return base / sdm if (base / sdm).exists() or not tar.exists() else tar
+
     def worker_args(self) -> str:
         """The worker script; a relative path is taken from the repo (e.g. trackmanager/worker.py)."""
         a = Path(self.pipeline.worker.args)
@@ -242,8 +280,6 @@ class ProjectConfig:
             env["VLA_PIPELINE_CONFIG_DIR"] = str(self.resolve(p.source_configs))
         if p.antcorr_tables:
             env["ANTCORR_DIR"] = str(self.resolve(p.antcorr_tables))
-        if spec.get("path"):
-            env["TAR"] = str(self.resolve(spec["path"]))
         if self.resources(spec).cores:
             env["OMP_NUM_THREADS"] = str(self.resources(spec).cores)
         env.update({k: str(v) for k, v in {**p.env, **(spec.get("env") or {})}.items()})
@@ -251,7 +287,8 @@ class ProjectConfig:
 
     def limits(self) -> Limits:
         c = self.controller
-        return Limits(dict(c.max_workers), c.max_sessions, c.min_free_tb)
+        return Limits({"stage": DEFAULT_STAGE_WORKERS, **c.max_workers}, c.max_sessions, c.min_free_tb,
+                      c.quota_tb, self.pipeline.disk_factor)
 
     def reload_limits(self) -> Limits:
         """Re-read the limits from the file this config came from; keep the current ones if the
@@ -266,6 +303,8 @@ class ProjectConfig:
         self.controller.max_workers = fresh.controller.max_workers
         self.controller.max_sessions = fresh.controller.max_sessions
         self.controller.min_free_tb = fresh.controller.min_free_tb
+        self.controller.quota_tb = fresh.controller.quota_tb
+        self.pipeline.disk_factor = fresh.pipeline.disk_factor
         return self.limits()
 
     # ---- validation --------------------------------------------------------
@@ -295,6 +334,12 @@ class ProjectConfig:
         need(c.poll_s > 0 and c.grace_s >= 0, "controller.poll_s must be positive, grace_s non-negative")
         need(c.relaunch_after_d is None or c.relaunch_after_d > 0, "controller.relaunch_after_d must be positive")
         need(c.auto_retry >= 0, "controller.auto_retry must be >= 0")
+        need(c.quota_tb is None or c.quota_tb > 0, "controller.quota_tb must be positive")
+        need(c.min_free_tb is None or c.min_free_tb >= 0, "controller.min_free_tb must be >= 0")
+        need(c.quota_tb is None or c.min_free_tb is None or c.min_free_tb < c.quota_tb,
+             "controller.min_free_tb must be smaller than controller.quota_tb")
+        need(0 <= self.pipeline.stage_worker.size_tolerance < 1,
+             "pipeline.stage_worker.size_tolerance must be in [0, 1)")
         need(isinstance(c.max_workers, dict) and c.max_workers, "controller.max_workers must be a mapping")
         for kind, n in (c.max_workers or {}).items():
             need(kind in states.WORKER_KINDS, f"controller.max_workers.{kind}: unknown worker stage "
