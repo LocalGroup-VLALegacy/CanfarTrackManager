@@ -3,24 +3,27 @@
 Each cycle (plan §3.3) it:
   1. checks the lease and writes a heartbeat;
   2. makes one fetch() of all headless sessions (no state changes without a fresh listing);
-  3. applies operator decisions from inbox/;
-  4. reconciles every RUNNING EB: live -> wait; terminal -> save info/logs/events,
-     then verify outputs; missing -> verify outputs (records are kept ~1 h);
-  5. submits QUEUED EBs, oldest first (higher "priority" first), while fewer than
-     max_workers worker sessions are live: attempt file first, then create(), then
-     record the IDs. Every live session with this run's worker prefix takes a slot,
-     including ones the database does not expect (orphans). The rest stay QUEUED,
-     with their queue position recorded in state/;
-  6. writes state/summary.json and jobs/summary.json, and hands off to a
-     successor session when relaunch_after_s has passed.
+  3. applies operator and reviewer input from inbox/ (inbox.py, review.py);
+  4. runs the handler for every track's (stage, activity) (HANDLERS below): reconcile a running
+     calibrate attempt (live -> wait; terminal -> save info/logs/events, then verify outputs;
+     missing -> verify outputs, since records are kept ~1 h), publish QA, promote;
+  5. submits queued tracks that scheduler.plan admits: attempt file first, then create(), then
+     record the IDs. Per-stage max_workers, a shared max_sessions and one admit() gate decide;
+     every live session with this project's worker prefix takes a slot, orphans included. The
+     rest stay queued, with queue_position and blocked_by recorded in state/;
+  6. writes state/summary.json and jobs/summary.json, and hands off to a successor session when
+     controller.relaunch_after_d has passed.
 
-Stages: QUEUED -> RUNNING -> PROMOTING -> DONE, or -> AWAITING_DECISION (operator: retry | skip).
-With "review": true, a verified iteration goes to AWAITING_REVIEW instead; the reviewer's
-decision is "pass" (-> PROMOTING -> DONE) or "restart" (-> QUEUED as iteration n+1, with the
-decision's flag and refant files frozen in iter_<n+1>/inputs/). Attempts are numbered within
-an iteration: tracks/<EB>/iter_<n>/attempt_<k>.json.
+Stages and their edges are in states.py (10 stages; progress inside a stage is the `activity`
+field). Tracks come from project.yaml's `tracks` and from "request" actions in inbox/
+(trackmanager.request); they enter at CALIBRATING/queued until the upstream stages exist (M2, M3).
+With review.enabled, a verified iteration goes to AWAITING_REVIEW; the verdict is "pass"
+(-> PROMOTING -> DONE) or "restart" (-> CALIBRATING/queued as iteration n+1, with the decision's flag
+and refant files frozen in iter_<n+1>/inputs/). Failures go to AWAITING_DECISION and remember where
+they failed; "retry" returns there. Attempts are numbered within an iteration:
+tracks/<EB>/iter_<n>/attempt_<k>.json.
 
-Retention ("retention" in the config; plan §3.2):
+Retention (project.yaml "retention"; plan §3.2, retention.py):
   trim_work (default true)       after a verified run, delete iter_<n>/work/ (full MS, caltables,
                                  intermediate tables) and stale work dirs of failed attempts;
                                  only splits/, products/, inputs/ and logs/ stay. A failed
@@ -32,19 +35,18 @@ Retention ("retention" in the config; plan §3.2):
   keep_raw_after_done (false)    PROMOTING deletes tracks/<EB>/raw/ unless this is true. Raw data
                                  stays on disk through every iteration until the track passes.
 
-QA products ("qa" in the config; plan §5): every iteration's products, QA pages included, are
+QA products ("qa" in project.yaml; plan §5, qa.py): every iteration's products, QA pages included, are
 written straight to <products_dir>/<EB>/iter_<n>/ (default <root>/products), outside the track
 database, so a reviewer's link never changes. COMPLETE marks the approved iteration
 (<EB>/approved.json) instead of moving anything. Reviewers read them in a browser through the
 ARC files service (url_base + the path after /arc). Each cycle the controller writes
 <products_dir>/index.html (all tracks) and <products_dir>/<EB>/index.html (all iterations).
-  products_dir   (default "products"; retention.products_dir is still read)
+  products_dir   (default "products")
   group          CADC group given read access (POSIX ACL, shown as "Read" in Storage
                  Management) to each new QA folder; default none (owner and project group only)
   url_base       default https://ws-uv.canfar.net/arc/files
-Tracks come from the config's "ebs" and from "request" actions in inbox/ (trackmanager.request).
 
-Local run:    python -m trackmanager.controller --config project.json --root <run root>
+Local run:    python -m trackmanager.controller --project project.yaml [--root <run root>]
 Fake backend: add --backend fake (workers run as local subprocesses).
 """
 from __future__ import annotations
