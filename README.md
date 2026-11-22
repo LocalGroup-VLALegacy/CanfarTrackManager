@@ -16,7 +16,7 @@ not written yet.
 | Part | State |
 |---|---|
 | Controller: lease and heartbeat, one `fetch()` per cycle, attempt file before `create()`, reconcile by ID or name, verify outputs, auto-retry, operator inbox, successor handoff | Working; real-scheduler checks E1–E7 |
-| Per-stage worker limits (`controller.max_workers`), shared `max_sessions`, one `admit()` gate, queue held in the database with `blocked_by`, requests while running | Working; real-scheduler check Q1 (before the per-stage change) |
+| Per-stage worker limits (`controller.max_workers`), shared `max_sessions`, one `admit()` gate, queue held in the database with `blocked_by`, requests while running | Working; real-scheduler check Q1 (re-run 2026-11-22 on the M1 code) |
 | Iterations and review: `iter_<n>/`, `pass` / `restart` / `manual_review` / `help_requested` | Working on the fake backend; first real RESTART run in progress |
 | Calibrate worker (`workers/calibrate_worker.sh`): stage the SDM, fresh workdir, CASA with cgroup limits, verify, QA | Working; IC10 D test track |
 | Sheets: template spec, Sheets API request builder, flag-command rebuild and checks | Offline only; no bridge to Google yet |
