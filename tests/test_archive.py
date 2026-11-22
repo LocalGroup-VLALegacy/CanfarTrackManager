@@ -247,3 +247,17 @@ def test_did_parsing_including_the_older_underscore_names():
     old = archive.parse_did("20A-346_sb42966433_2_1.59886.97117081018")
     assert old["sdm"].startswith("20A-346_sb") and old["sbid"] == 42966433 and old["ebid"] is None
     assert archive.parse_did("weird") == {"sdm": "weird", "ebid": None, "sbid": None, "mjd": None}
+
+
+def test_spw_signature_ignores_doppler_jitter_in_the_center_frequencies():
+    row = {"spw_names": "A,B", "bandwidths": "2e6,2e6", "nums_channels": "128,128",
+           "spectral_resolutions": "15625.0,15625.0", "center_frequencies": "1374535140.07,1420326206.13"}
+    moved = dict(row, center_frequencies="1374600000.00,1420400000.00")
+    assert archive._spw_signature(row) == archive._spw_signature(moved)
+    assert archive._spw_signature(row) != archive._spw_signature(dict(row, nums_channels="128,256"))
+
+
+def test_24b224_has_a_few_setups_not_one_per_eb(tmp_path):
+    cfg, root = load(tmp_path, REAL, ["24B-224"])
+    sigs = {r["spw_signature"] for r in archive.sync(root, cfg).kept.values()}
+    assert len(sigs) == 3

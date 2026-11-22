@@ -132,7 +132,10 @@ def _f(row, key, default=None):
 
 
 def _spw_signature(row) -> str:
-    key = "|".join(row.get(k, "") for k in ("spw_names", "center_frequencies", "bandwidths", "nums_channels"))
+    """The correlator setup: SPW names, bandwidths, channel counts and channel widths. Center
+    frequencies are left out on purpose: Doppler tracking moves every one of them a little from
+    EB to EB, which would make every EB its own "setup"."""
+    key = "|".join(row.get(k, "") for k in ("spw_names", "bandwidths", "nums_channels", "spectral_resolutions"))
     return hashlib.sha1(key.encode()).hexdigest()[:12]
 
 

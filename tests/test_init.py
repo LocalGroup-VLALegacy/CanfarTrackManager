@@ -86,3 +86,4 @@ def test_24b224_with_the_real_cfgs_is_clean(tmp_path, capsys):
     assert sum(v["ebs"] for v in rep["by_config"].values()) == 47 and set(rep["by_config"]) == {"A", "B", "C", "D"}
     assert rep["verdicts"] == {"ok": 44, "skip_candidate": 3}
     assert 1.0 < rep["quota"]["total_sdm_tb"] < 15
+    assert len(rep["setup_variants"]["signatures"]) == 3 and rep["setup_variants"]["varying_within_eb"] == []
