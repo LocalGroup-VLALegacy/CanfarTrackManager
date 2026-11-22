@@ -31,9 +31,18 @@ def main(argv=None):
               + (f"  ALARM: {arc['alarm']['error']}" if arc.get("alarm") else ""))
     w = full.get("workers") or {}
     if w:
-        print(f"workers    {w.get('in_use')}/{w.get('limit')} slots in use ({w.get('running_tracks')} tracks, "
+        by = w.get("in_use_by_kind") or {}
+        slots = ", ".join(f"{k} {by.get(k, 0)}/{(w.get('limits') or {}).get(k, 0)}" for k in by)
+        print(f"workers    {slots or str(w.get('in_use')) + '/' + str(w.get('limit'))} slots in use ({w.get('running_tracks')} tracks, "
               f"{len(w.get('orphans', []))} orphan sessions {w.get('orphans') or ''}); "
               f"{w.get('queued')} queued, {w.get('held')} held")
+    d = full.get("disk") or {}
+    if d.get("quota_tb") is not None:
+        print(f"disk       {d['modelled_used_tb']} of {d['quota_tb']} TB reserved by the model "
+              f"(keeping {d['min_free_tb']} TB free; {d['free_tb']} TB left; disk_factor {d['disk_factor']}"
+              f"{'; ' + str(d['unsized_tracks']) + ' tracks of unknown size' if d.get('unsized_tracks') else ''})")
+    elif d:
+        print(f"disk       gate off (controller.quota_tb is not set); model holds {d['modelled_used_tb']} TB")
     summ = full.get("ebs", {})
     wid = max([14] + [len(eb) + 2 for eb in summ])
     print(f"\n{'EB':<{wid}}{'stage':<24}{'iter':>4}{'att':>4}  {'hold':<5}{'queue':>6}  detail")

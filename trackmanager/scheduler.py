@@ -10,9 +10,11 @@ Gates, in order, per track:
   1. `limits.max_workers[kind]`   live sessions of that kind (running tracks + orphans);
                                   0, or no entry, holds the whole kind.
   2. `limits.max_sessions`        shared cap on live sessions across kinds.
-  3. `admit(st)`                  one shared gate for everything else (M3: the project disk
-                                  budget, `disk_factor x SDM` against `min_free_tb`). It returns
-                                  None to admit, or a string saying why not.
+  3. `admit(st)`                  one shared gate for everything else: the controller passes
+                                  disk.Gate.admit (the project disk budget, trackmanager/disk.py).
+                                  It returns None to admit, or a string saying why not. It runs
+                                  last, so a None return means the track is admitted and a stateful
+                                  gate may reserve for it.
 Order is priority (higher first), then the time the track was queued. A track that fails a
 gate does not block later tracks (they may still fit).
 """

@@ -78,7 +78,8 @@ def _table(name, rows):
 
 def make_fake_sdm(parent, name="20A-346.sb1.eb1.59786.37", scans=TARGET_SCANS, bdf_bytes=1000, bdf_files=None):
     """A small SDM directory: the four XML tables stage_local reads plus ASDMBinary/ with one BDF per
-    scan (`bdf_files` overrides the count, to make a corrupt SDM). Returns its path."""
+    scan (`bdf_files` overrides the count, to make a corrupt SDM). BDFs are sparse files of
+    `bdf_bytes`, so tests can claim a large size cheaply. Returns its path."""
     sdm = Path(parent) / name
     (sdm / "ASDMBinary").mkdir(parents=True)
     fields = sorted({f for _, f, _ in scans})
@@ -91,7 +92,8 @@ def make_fake_sdm(parent, name="20A-346.sb1.eb1.59786.37", scans=TARGET_SCANS, b
     (sdm / "Main.xml").write_text(_table("MainTable", [
         {"scanNumber": n, "subscanNumber": 1, "fieldId": fid[f]} for n, f, _ in scans]))
     for k in range(len(scans) if bdf_files is None else bdf_files):
-        (sdm / "ASDMBinary" / f"uid____evla_bdf_{k}").write_bytes(b"\0" * bdf_bytes)
+        with open(sdm / "ASDMBinary" / f"uid____evla_bdf_{k}", "wb") as f:
+            f.truncate(bdf_bytes)           # sparse: a "100 GB" SDM costs no disk
     return sdm
 
 

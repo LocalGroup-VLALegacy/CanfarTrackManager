@@ -245,3 +245,44 @@ def test_archive_track_is_staged_from_arc_dir_by_its_archive_name(tmp_path):
     assert read_json(root / "tracks" / name / "stage" / "attempt_1.json")["request"]["env"]["EXPECT_SDM"] == name
     other = state(root, gone)
     assert other["stage"] == "AWAITING_DECISION" and "does not exist" in other["detail"]
+
+
+def test_disk_gate_runs_tracks_one_at_a_time_when_only_one_fits(tmp_path):
+    sdm = sdm_in(tmp_path, bdf_bytes=33_333_333_333)        # three sparse BDFs: a 100 GB SDM
+    # 100 GB SDMs, 1.05 TB quota: a calibration grows a track from 100 to 800 GB, so two never fit at once
+    cfg, root = project(tmp_path, [{"eb": f"d{i}", "path": str(sdm), "size_gb": 100, "mode": "ok", "sleep_s": 6}
+                                   for i in range(3)], max_workers=3, quota_tb=1.05, min_free_tb=0)
+    p = controller(cfg, root, wait=False)
+    blocked, deadline = {}, time.time() + 90
+    while time.time() < deadline and p.poll() is None and not blocked:
+        for f in (root / "state").glob("d*.json"):
+            s = read_json(f) or {}
+            if str(s.get("blocked_by", "")).startswith("disk:"):
+                blocked[s["eb"]] = s["blocked_by"]
+        time.sleep(0.3)
+    assert blocked, "no queued track was ever held by the disk gate"
+    assert "0.70 TB" in next(iter(blocked.values()))
+    summ = read_json(root / "state" / "summary.json")
+    assert summ["disk"]["quota_tb"] == 1.05 and summ["disk"]["modelled_used_tb"] > 0
+    out = subprocess.run([sys.executable, "-m", "trackmanager.status", "--root", str(root)], cwd=REPO,
+                         capture_output=True, text=True).stdout
+    assert "disk       " in out and "of 1.05 TB reserved" in out
+    p.communicate(timeout=180)
+    assert set(stages(root).values()) == {"DONE"}
+    live = peak = 0
+    for e in events(root):
+        if e.get("activity") == "running" and e.get("from_activity") == "queued" and e["to"] == "CALIBRATING":
+            live += 1
+        elif e["from"] == "CALIBRATING" and e["to"] != "CALIBRATING":
+            live -= 1
+        peak = max(peak, live)
+    assert peak == 1
+
+
+def test_without_a_quota_nothing_is_held_back(tmp_path):
+    sdm = sdm_in(tmp_path)
+    cfg, root = project(tmp_path, [{"eb": f"n{i}", "path": str(sdm), "size_gb": 1e6, "mode": "ok", "sleep_s": 2}
+                                   for i in range(2)], max_workers=2)
+    controller(cfg, root)
+    assert set(stages(root).values()) == {"DONE"}
+    assert read_json(root / "state" / "summary.json")["disk"]["quota_tb"] is None

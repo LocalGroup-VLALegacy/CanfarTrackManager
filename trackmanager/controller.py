@@ -65,7 +65,7 @@ from pathlib import Path
 
 from . import archive
 from . import config as projconfig
-from . import inbox, qa, scheduler
+from . import disk, inbox, qa, scheduler
 from . import jobs as joblog
 from . import states as S
 from .stages import calibrate, discover, promote, qa_publish, stage_local
@@ -117,6 +117,7 @@ class Controller:
         self.sessions: list[dict] = []
         self.orphans: set[str] = set()
         self.workers: dict = {}
+        self.disk: dict = {}
         self.cycle_cache: dict = {}  # per-cycle values shared by handlers (reset in cycle())
 
     # ---- database helpers ------------------------------------------------
@@ -320,8 +321,10 @@ class Controller:
         self.orphans = set(orphans)
         by_kind = {kind: sum(self.worker_kind(n) == kind for n in orphans.values())
                    for kind in S.WORKER_KINDS}
-        plan = scheduler.plan(tracks, limits, by_kind,
+        gate = disk.Gate(tracks, limits, self.spec)
+        plan = scheduler.plan(tracks, limits, by_kind, admit=gate.admit,
                               priority=lambda st: self.spec(st).get("priority", 0))
+        self.disk = gate.summary()
         for st in plan.submit:
             submit = SUBMITTERS.get(st["stage"])
             if submit is None:  # a worker stage whose handler is not written yet
@@ -384,14 +387,15 @@ class Controller:
     # ---- summaries and handoff ------------------------------------------
     def write_summaries(self, states):
         write_json(self.r.summary, {"ts": iso(), "controller": self.me, "cycle": self.cycle_n,
-                                    "workers": self.workers,
+                                    "workers": self.workers, "disk": self.disk,
                                     "archive": {**(read_json(self.r.archive_dir / "sync.json") or {}),
                                                 "alarm": archive.alarm(self.r)} if archive.enabled(self.cfg) else None,
                                     "qa_home_url": qa.qa_url(self, self.base_dir("products_dir") / "index.html"),
                                     "ebs": {eb: {k: st.get(k) for k in
                                                  ("stage", "activity", "iteration", "attempt", "detail", "updated",
                                                   "hold", "hold_reason", "reason", "queued_at", "queue_position",
-                                                  "blocked_by", "qa_url", "request_state", "est_size_gb")}
+                                                  "blocked_by", "qa_url", "request_state", "est_size_gb",
+                                                  "sdm_bytes", "stage_attempt")}
                                             for eb, st in states.items()}})
         try:
             qa.write_index(self, states)

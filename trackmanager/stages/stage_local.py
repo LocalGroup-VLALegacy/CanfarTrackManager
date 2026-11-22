@@ -58,9 +58,8 @@ def submit(ctl, st):
     sdm = (st.get("spec") or {}).get("sdm") or spec.get("sdm")
     if sdm:
         env["EXPECT_SDM"] = sdm
-    size = st.get("est_size_gb") or spec.get("size_gb")
-    if size:
-        env["EST_BYTES"] = str(int(float(size) * 1e9))
+    if st.get("est_size_gb"):       # TAP's estimate is checked; a config `size_gb` only feeds the disk gate
+        env["EST_BYTES"] = str(int(float(st["est_size_gb"]) * 1e9))
     att = {"name": ctl.session_name(eb, None, k), "kind": "stage", "attempt": k, "requested_at": iso(),
            "request": {"image": ctl.cfg.stage_image(), "cmd": sw.cmd, "args": ctl.cfg.stage_worker_args(),
                        "env": env, "cores": None, "ram": None},

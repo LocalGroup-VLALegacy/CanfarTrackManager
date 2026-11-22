@@ -17,10 +17,9 @@ from collections import Counter, defaultdict
 
 from . import archive, cfgs, preflight
 from . import config as projconfig
+from .disk import PRODUCTS_FACTOR, SPLIT_FACTOR   # the quota model the disk gate uses (plan §3.2)
 from .store import Root, iso, now, write_json
 
-SPLIT_FACTOR = 0.83        # kept science splits, as a multiple of the SDM size (plan §3.2 quota model)
-PRODUCTS_FACTOR = 0.056    # QA products per iteration
 ITERATIONS = 3             # assumed iterations per track for the products estimate
 
 
