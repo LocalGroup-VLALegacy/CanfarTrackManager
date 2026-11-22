@@ -136,3 +136,12 @@ def test_24b224_against_the_real_lglbs_cfgs(tmp_path):
     assert len(skips) == 3 and all(v < 1.0 or kept[k]["duration_min"] < 30 for k, v in skips.items())
     assert any("calibrators only" in res[k].summary() for k in skips)
     assert all(r.targets == ["IC342"] for r in res.values() if r.verdict == "ok")
+
+
+def test_24b224_skip_candidates_are_the_ebs_the_old_sheet_left_out(tmp_path):
+    import csv
+    cfg, kept, tables = setup(tmp_path, fixture="tap_24B-224.csv.gz", codes=("24B-224",),
+                              cfg_dir=PIPELINE_REPO / "config_files")
+    skips = {k for k, v in kept.items() if preflight.run(v, cfg, tables).verdict == "skip_candidate"}
+    sheet = {r["Trackname"] for r in csv.DictReader(open(FIXTURES / "sheet_24B-224.csv"))}
+    assert skips == set(kept) - sheet
