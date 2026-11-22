@@ -59,15 +59,19 @@ def test_failable_stages_are_the_working_stages():
         S.check(S.AWAITING_DECISION, stage)
 
 
-def test_pending_edges_are_exactly_the_upstream_ones():
-    pending = {(f, t) for f, t, e in S.edges() if e.pending}
-    upstream = {S.DISCOVERED, S.AWAITING_DATA, S.STAGING}
+def test_pending_edges_are_exactly_the_ones_without_a_handler_yet():
+    """M2 wrote DISCOVERED's handler, so only edges out of AWAITING_DATA and STAGING (M6, M3) and
+    the retry back into STAGING (M3) are still pending."""
+    pending = {(f, t): e.pending for f, t, e in S.edges() if e.pending}
     assert pending
-    for frm, to in pending:
-        assert frm in upstream or to in upstream, (frm, to)
+    for (frm, to), milestone in pending.items():
+        assert frm in (S.AWAITING_DATA, S.STAGING) or to == S.STAGING, (frm, to)
+        assert milestone in ("M3", "M6"), (frm, to)
     for frm, to, e in S.edges():
-        if frm in upstream or to in upstream:
-            assert e.pending in ("M2", "M3", "M6"), (frm, to)
+        if frm in (S.AWAITING_DATA, S.STAGING):
+            assert e.pending in ("M3", "M6"), (frm, to)
+        if S.DISCOVERED in (frm, to):
+            assert not e.pending, (frm, to)
 
 
 def test_activities():

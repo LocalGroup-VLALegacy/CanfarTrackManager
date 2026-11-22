@@ -20,12 +20,12 @@ not written yet.
 | Iterations and review: `iter_<n>/`, `pass` / `restart` / `manual_review` / `help_requested` | Working on the fake backend; first real RESTART run in progress |
 | Calibrate worker (`workers/calibrate_worker.sh`): stage the SDM, fresh workdir, CASA with cgroup limits, verify, QA | Working; IC10 D test track |
 | Sheets: template spec, Sheets API request builder, flag-command rebuild and checks | Offline only; no bridge to Google yet |
-| Archive sync / `init` / preflight from NRAO TAP | Probe only (`scripts/tap_probe.py`) |
+| Archive sync from NRAO TAP, preflight against the project cfgs, `init` setup report, `include` / `recheck` actions | Working (M2) on recorded 24B-224 fixtures and live TAP; archive tracks stop at `AWAITING_DATA` (M6) or `STAGING` (M3) |
 | Retention: trim `work/` after each verified run, drop old splits on restart, PROMOTING moves splits to `science_dir`, raw deleted on COMPLETE | Working on the fake backend; not yet on a real track |
 | QA for reviewers: every iteration in `qa.products_dir/<EB>/iter_<n>/`, group read for `qa.group`, QA home and per-track index pages, ARC files links, QAPlotter nav fix | Working on the fake backend; ARC serving checked by hand; reviewer-account check pending (`docs/qa_access.md`) |
 | Project job log (`jobs/jobs.csv`, `jobs.log`, `python -m trackmanager.jobs`) and track log (`state/tracks.csv`) | Working on the fake backend |
 | `fetch_raw`, disk-quota gates | Not written (the `admit()` hook is in place) |
-| `project.yaml` loader and the 10-stage state machine (`config.py`, `states.py`) | Working (M1); upstream stages (`DISCOVERED`, `AWAITING_DATA`, `STAGING`) are in the table but have no handlers yet |
+| `project.yaml` loader and the 10-stage state machine (`config.py`, `states.py`) | Working (M1); `DISCOVERED` has its handler (M2); `AWAITING_DATA` and `STAGING` are in the table but have no handlers yet |
 | Dashboard | Text status only (`python -m trackmanager.status`) |
 
 ## Layout
@@ -36,7 +36,10 @@ trackmanager/        Python package
   states.py          the 10-stage state machine as data: stages, edges, human gates
   controller.py      the controller (python -m trackmanager.controller): lease, cycle, handoff
   scheduler.py       which queued tracks get a worker this cycle (pure)
-  stages/            calibrate.py (submit, reconcile, verify), qa_publish.py, promote.py
+  archive.py         NRAO TAP query, one record per EB, selection, sync (stdlib only)
+  preflight.py cfgs.py   checks on an EB before download; the pipeline cfgs via its own readers
+  init.py            setup report (python -m trackmanager.init)
+  stages/            discover.py (sync, preflight), calibrate.py (submit, reconcile, verify), qa_publish.py, promote.py
   review.py inbox.py reviewer verdicts and operator actions from inbox/
   qa.py retention.py QA folders, links and index pages; what is deleted when
   store.py           atomic JSON / JSONL, run-root paths
@@ -54,9 +57,11 @@ casa/casa_with_limits.sh      passes the session's cores and memory limit into C
 qa/run_qa.sh, install_qadeps.sh   weblog + QAPlotter with CASA's python
 qa/fix_nav.py        points QAPlotter's home links at the QA index pages
 appsscript/ReviewNotifications.gs time-driven "QA ready" emails for the tracker
-scripts/             run_controller.sh, submit_controller.sh, probe.sh, tap_probe.py
-examples/            project.yaml examples (fake backend, placeholder workers, queue test, IC10 calibrate)
-tests/               state table, config and scheduler tests; fake-backend fault-injection and stage tests; offline Sheets tests
+scripts/             run_controller.sh, submit_controller.sh, probe.sh, tap_probe.py, record_tap_fixture.py,
+                     extract_sheet_fixture.py, check_archive_vs_sheet.py (live 20A-346 check)
+examples/            project.yaml examples (fake backend, placeholder workers, queue test, IC10 calibrate, archive sync)
+tests/               state table, config, scheduler, archive, preflight, init tests; fake-backend fault-injection, stage and discovery tests; offline Sheets tests
+tests/fixtures/      recorded TAP result and old-sheet rows for 24B-224, a synthetic project, small pipeline cfgs
 docs/                submission scheme and attempt lifecycle diagrams
 ```
 
@@ -76,6 +81,9 @@ python -m trackmanager.status --root /arc/projects/<space>/<run>
 python -m trackmanager.decide --root <run> --eb <EB> --action restart --flags flags.txt --refant-ignore ea26
 python -m trackmanager.decide --root <run> --eb <EB> --action pass
 python -m trackmanager.decide --root <run> --eb <EB> --action retry|skip|needs_manual   # from AWAITING_DECISION
+python -m trackmanager.decide --root <run> --eb <EB> --action include   # a skip candidate (short or tiny EB) goes on
+python -m trackmanager.decide --root <run> --eb <EB> --action recheck   # rerun preflight after fixing a cfg
+python -m trackmanager.init --project <project.yaml>   # archive sync + preflight report; rerun until clean
 python -m trackmanager.request --root <run> --eb <EB> --priority 1
 python -m trackmanager.jobs --root <run> [--eb <EB>] [--status failed] [--csv]
 ```
@@ -87,7 +95,7 @@ has it; `scripts/run_controller.sh` installs a pinned copy in headless sessions)
 
 | Stage | Who acts | Progress inside it |
 |---|---|---|
-| `DISCOVERED` | controller | preflight (M2) |
+| `DISCOVERED` | controller | archive sync creates it; preflight runs here and decides the next stage |
 | `AWAITING_DATA` ✋ | operator | `request_state`: `needs_request` → `requested` (M6) |
 | `STAGING` | worker | `activity`: `queued` / `running` (M3) |
 | `CALIBRATING` | worker | `activity`: `queued` / `running` / `publishing` |
@@ -97,7 +105,7 @@ has it; `scripts/run_controller.sh` installs a pinned copy in headless sessions)
 | `AWAITING_DECISION` ✋ | operator | `reason`: `skip_candidate`, `preflight_failed`, `failed` (+ `failed_from`) |
 
 `trackmanager/states.py` has every allowed edge, and `Controller.set_stage` refuses any other.
-In M1 tracks from the config enter at `CALIBRATING/queued`. `retry` returns a track to the stage
+Tracks from the config's `tracks:` and operator requests enter at `CALIBRATING/queued`; tracks found by the archive sync enter at `DISCOVERED`, and preflight sends them to `AWAITING_DATA` (`nrao_link`), `STAGING/queued` (`arc_path`, waits for M3) or `AWAITING_DECISION` (`skip_candidate`: `include` or `skip`; `preflight_failed`: fix the cfgs, then `recheck`). EBs outside `archive.bands_ghz` or in `exclude_ebs` never become tracks. `retry` returns a track to the stage
 it failed in. Queued tracks show `queue_position` and `blocked_by` in `state/<EB>.json`.
 
 ## Main settings (`project.yaml`; see `trackmanager/templates/project.yaml`)
@@ -114,7 +122,9 @@ it failed in. Queued tracks show `queue_position` and `blocked_by` in `state/<EB
 | `project.session_prefix` | session-name prefix (default `tm`); also marks this project's workers when counting slots |
 | `retention` | `trim_work`, `drop_prev_iter_work` (both default `true`), `keep_raw_after_done` (`false`), `science_dir` (default `<root>/science`) |
 | `qa` | `products_dir` (default `<root>/products`), `group` (read-only reviewer group, see `docs/qa_access.md`), `url_base` (ARC files service) |
-| `tracks` | tracks seeded from the file until archive sync (M2) discovers them: `eb`, `priority`, `config`, `path` (SDM directory or tar) |
+| `project.vla_project_codes`, `inputs` | VLA project codes to sync; `source` (`nrao_link` or `arc_path`) and `eb_list` (`archive`, or `file:<csv>` as an allow-list) |
+| `archive` | `tap_url` (`https://…/tap`, or `file://<csv[.gz]>` for fixtures), `poll_h`, `bands_ghz`, `include_ebs` / `exclude_ebs` (SDM name or EB id), `min_duration_min`, `size_calibration`; `cones` is accepted but not used yet |
+| `tracks` | tracks seeded from the file (tests, the IC10 run): `eb`, `priority`, `config`, `path` (SDM directory or tar) |
 
 Relative paths are taken from `project.root`; `--root` overrides it.
 

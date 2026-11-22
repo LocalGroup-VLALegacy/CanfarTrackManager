@@ -4,8 +4,9 @@
     python -m trackmanager.decide --root ../runs/r1 --eb X --action restart \\
         --flags my_flags.txt --refant-ignore ea26 --notes "RFI in scan 5"
     python -m trackmanager.decide --root ../runs/r1 --eb X --action pass
-Actions: retry | skip | needs_manual (only applied in AWAITING_DECISION; skip also in
-AWAITING_DATA), hold | release (any stage),
+Actions: retry | recheck | include | skip | needs_manual (only applied in AWAITING_DECISION; skip also
+in AWAITING_DATA). `recheck` reruns preflight after a cfg fix; `include` lets a skip candidate
+(short or tiny EB) through; `retry` applies to failures. hold | release (any stage),
 pass | restart | manual_review | help_requested (only applied in AWAITING_REVIEW, and only
 to the iteration it names; by default the track's current iteration, read from state/).
 manual_review and help_requested put the track on HOLD for the operator, with no rerun. A restart carries the full text
@@ -24,7 +25,7 @@ def main(argv=None):
     p.add_argument("--root", required=True)
     p.add_argument("--eb", required=True)
     p.add_argument("--action", required=True,
-                   choices=["retry", "skip", "needs_manual", "hold", "release", "pass", "restart",
+                   choices=["retry", "recheck", "include", "skip", "needs_manual", "hold", "release", "pass", "restart",
                             "manual_review", "help_requested"])
     p.add_argument("--iteration", type=int, help="iteration the verdict is for (default: current)")
     p.add_argument("--flags", type=Path, help="manual_flagging.txt for the next iteration (restart)")

@@ -130,6 +130,17 @@ class Root:
     def track(self, eb: str) -> Path:
         return self.path / "tracks" / eb
 
+    @property
+    def archive_dir(self) -> Path:
+        """Archive sync bookkeeping: index.json, sync.json, snapshots/ (plan §3.7)."""
+        return self.path / "archive"
+
+    def archive_json(self, eb: str) -> Path:
+        return self.track(eb) / "archive.json"
+
+    def archive_scans(self, eb: str) -> Path:
+        return self.track(eb) / "archive_scans.csv"
+
     def iter_dir(self, eb: str, n: int) -> Path:
         """One review iteration: inputs/, attempt_<k>.json, logs/, work/, products/, result.json."""
         return self.track(eb) / f"iter_{n}"

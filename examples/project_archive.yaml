@@ -1,0 +1,30 @@
+# Archive discovery only (M2): syncs the 47 EBs of VLA project 24B-224 (IC342) from NRAO TAP,
+# runs preflight against the LGLBS cfgs and leaves tracks at AWAITING_DATA / AWAITING_DECISION.
+# No workers are started. Setup report:    python -m trackmanager.init --project examples/project_archive.yaml
+# Real-scheduler check (one controller session, no workers):
+#   bash scripts/submit_controller.sh examples/project_archive.yaml
+project:
+  name: archive
+  vla_project_codes: [24B-224]
+  root: /arc/projects/VVINGS/vla-calib-mwe/runs/archive
+  session_prefix: tm
+
+inputs: {source: nrao_link, eb_list: archive}
+
+archive: {poll_h: 24, bands_ghz: [[1.0, 2.0]], min_duration_min: 30}
+
+pipeline:
+  image: images.canfar.net/casa-6/casa:6.6.1-17-pipeline
+  repo: /arc/home/ekoch/vla_processing/ReductionPipeline
+  source_configs: /arc/home/ekoch/vla_processing/ReductionPipeline/config_files   # the LGLBS cfgs
+  casa_home: /arc/home/ekoch/casa-6.6.6-18-pipeline-2025.1.0.37-py3.10.el8
+  qa_deps: /arc/projects/VVINGS/shared/qadeps/casa-6.6.6-18-py3.10
+  resources: {default: {cores: 8, ram: 64}}
+
+review: {enabled: true}
+
+controller:
+  image: images.canfar.net/skaha/base-notebook:latest
+  poll_s: 300
+  grace_s: 900
+  max_workers: {calibrate: 1}

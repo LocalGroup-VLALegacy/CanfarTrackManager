@@ -33,3 +33,22 @@ def make_project(tmp_path, tracks, **over):
     path = tmp_path / "project.yaml"
     path.write_text(yaml.safe_dump(data))
     return path, tmp_path / "run"
+
+
+FIXTURES = REPO / "tests" / "fixtures"
+
+
+def make_archive_project(tmp_path, fixture, codes, archive=None, project=None, inputs=None, tracks=None,
+                         pipeline=None, **over):
+    """Like make_project, but tracks come from the archive: project codes, tap_url pointing at a
+    fixture file (name under tests/fixtures, or an absolute path), and no config tracks."""
+    path, run = make_project(tmp_path, tracks or [], **over)
+    data = yaml.safe_load(path.read_text())
+    fx = Path(fixture)
+    fx = fx if fx.is_absolute() else FIXTURES / fx
+    data["project"] = {**data["project"], "vla_project_codes": list(codes), **(project or {})}
+    data["archive"] = {"tap_url": f"file://{fx}", **(archive or {})}
+    data["inputs"] = {"source": "nrao_link", "eb_list": "archive", **(inputs or {})}
+    data["pipeline"] = {**data["pipeline"], **(pipeline or {})}
+    path.write_text(yaml.safe_dump(data))
+    return path, run
