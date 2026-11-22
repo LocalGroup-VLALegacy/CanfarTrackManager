@@ -7,7 +7,7 @@ empty EBs, or no science field; an operator `include` or archive.include_ebs byp
 TAP has no scan intents, so fields are classified by name: a field matching a `vsys` target is a
 target; one matching a calibrator cfg section, or that looks like a calibrator name, is a
 calibrator (the name pattern is only a hint); anything else is unclassified and fails preflight.
-`Scan.xml` confirms the split once the SDM is on disk (M3).
+`Scan.xml` confirms the split once the SDM is on disk (stages/stage_local.py).
 """
 from __future__ import annotations
 

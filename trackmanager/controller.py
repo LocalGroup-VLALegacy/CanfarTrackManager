@@ -6,7 +6,8 @@ Each cycle (plan §3.3) it:
   3. applies operator and reviewer input from inbox/ (inbox.py, review.py);
   4. runs the handler for every track's (stage, activity) (HANDLERS below): reconcile a running
      calibrate attempt (live -> wait; terminal -> save info/logs/events, then verify outputs;
-     missing -> verify outputs, since records are kept ~1 h), publish QA, promote;
+     missing -> verify outputs, since records are kept ~1 h), the same for a stage_local attempt
+     (STAGING: verify stage/manifest.json), publish QA, promote;
   5. submits queued tracks that scheduler.plan admits: attempt file first, then create(), then
      record the IDs. Per-stage max_workers, a shared max_sessions and one admit() gate decide;
      every live session with this project's worker prefix takes a slot, orphans included. The
@@ -16,7 +17,7 @@ Each cycle (plan §3.3) it:
 
 Stages and their edges are in states.py (10 stages; progress inside a stage is the `activity`
 field). Tracks come from project.yaml's `tracks` and from "request" actions in inbox/
-(trackmanager.request); they enter at CALIBRATING/queued until the upstream stages exist (M2, M3).
+(trackmanager.request); they enter at STAGING/queued when they name an input (`path`), else at CALIBRATING/queued.
 With review.enabled, a verified iteration goes to AWAITING_REVIEW; the verdict is "pass"
 (-> PROMOTING -> DONE) or "restart" (-> CALIBRATING/queued as iteration n+1, with the decision's flag
 and refant files frozen in iter_<n+1>/inputs/). Failures go to AWAITING_DECISION and remember where

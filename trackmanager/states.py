@@ -55,7 +55,7 @@ INPUT_FILES = ("manual_flagging.txt", "refant_ignore.txt")  # what a restart may
 class Edge:
     actor: str
     note: str = ""
-    pending: str | None = None  # milestone that writes the handler (M3, M6)
+    pending: str | None = None  # milestone that writes the handler (M6)
 
 
 def _e(actor, note="", pending=None):

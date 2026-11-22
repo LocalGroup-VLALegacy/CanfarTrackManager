@@ -8,7 +8,7 @@
                   skip candidate        -> AWAITING_DECISION, reason skip_candidate
                                            (operator sends `include` or `skip`)
                   ok, nrao_link         -> AWAITING_DATA, request_state needs_request  (M6 acts)
-                  ok, arc_path          -> STAGING, queued                             (M3 acts)
+                  ok, arc_path          -> STAGING, queued                             (stage_local acts)
 """
 from __future__ import annotations
 

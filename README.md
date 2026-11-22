@@ -18,14 +18,16 @@ not written yet.
 | Controller: lease and heartbeat, one `fetch()` per cycle, attempt file before `create()`, reconcile by ID or name, verify outputs, auto-retry, operator inbox, successor handoff | Working; real-scheduler checks E1–E7 |
 | Per-stage worker limits (`controller.max_workers`), shared `max_sessions`, one `admit()` gate, queue held in the database with `blocked_by`, requests while running | Working; real-scheduler check Q1 (re-run 2026-11-22 on the M1 code) |
 | Iterations and review: `iter_<n>/`, `pass` / `restart` / `manual_review` / `help_requested` | Working on the fake backend; first real RESTART run in progress |
-| Calibrate worker (`workers/calibrate_worker.sh`): stage the SDM, fresh workdir, CASA with cgroup limits, verify, QA | Working; IC10 D test track |
+| Staging (`stages/stage_local.py`, `stage_worker.py`): symlink an SDM directory or unpack an NRAO tar into `raw/`, verify it (BDF count, name, TAP size, `Scan.xml` intents against the cfgs), write `stage/manifest.json` | Working (M3); fake backend and real-scheduler checks on the IC10 SDM |
+| Calibrate worker (`workers/calibrate_worker.sh`): fresh workdir, CASA with cgroup limits, verify, QA; it reads the staged SDM and no longer stages | Working; IC10 D test track |
 | Sheets: template spec, Sheets API request builder, flag-command rebuild and checks | Offline only; no bridge to Google yet |
-| Archive sync from NRAO TAP, preflight against the project cfgs, `init` setup report, `include` / `recheck` actions | Working (M2) on recorded 24B-224 fixtures and live TAP; archive tracks stop at `AWAITING_DATA` (M6) or `STAGING` (M3) |
-| Retention: trim `work/` after each verified run, drop old splits on restart, PROMOTING moves splits to `science_dir`, raw deleted on COMPLETE | Working on the fake backend; not yet on a real track |
+| Archive sync from NRAO TAP, preflight against the project cfgs, `init` setup report, `include` / `recheck` actions | Working (M2) on recorded 24B-224 fixtures and live TAP; archive tracks stop at `AWAITING_DATA` (M6), or go to `STAGING` when `inputs.source` is `arc_path` |
+| Retention: trim `work/` after each verified run, drop old splits on restart, PROMOTING moves splits to `science_dir` and deletes `raw/` (verified; a `raw/` that will not delete keeps the track in PROMOTING), `provenance.json` cites the raw manifest, image, CASA, pipeline and ReductionPipeline versions | Working on the fake backend; the real-track run is the M3 acceptance run |
 | QA for reviewers: every iteration in `qa.products_dir/<EB>/iter_<n>/`, group read for `qa.group`, QA home and per-track index pages, ARC files links, QAPlotter nav fix | Working on the fake backend; ARC serving checked by hand; reviewer-account check pending (`docs/qa_access.md`) |
 | Project job log (`jobs/jobs.csv`, `jobs.log`, `python -m trackmanager.jobs`) and track log (`state/tracks.csv`) | Working on the fake backend |
-| `fetch_raw`, disk-quota gates | Not written (the `admit()` hook is in place) |
-| `project.yaml` loader and the 10-stage state machine (`config.py`, `states.py`) | Working (M1); `DISCOVERED` has its handler (M2); `AWAITING_DATA` and `STAGING` are in the table but have no handlers yet |
+| Disk gate (`disk.py`): `controller.quota_tb` minus a per-phase model of every track's footprint, `min_free_tb` kept free | Working (M3); real-scheduler check on the IC10 SDM |
+| `fetch_raw` (NRAO download) | Not written (M6) |
+| `project.yaml` loader and the 10-stage state machine (`config.py`, `states.py`) | Working (M1); `DISCOVERED` has its handler (M2); `STAGING` has its handler (M3); `AWAITING_DATA` is in the table but has none yet (M6) |
 | Dashboard | Text status only (`python -m trackmanager.status`) |
 
 ## Layout
@@ -84,7 +86,7 @@ python -m trackmanager.decide --root <run> --eb <EB> --action retry|skip|needs_m
 python -m trackmanager.decide --root <run> --eb <EB> --action include   # a skip candidate (short or tiny EB) goes on
 python -m trackmanager.decide --root <run> --eb <EB> --action recheck   # rerun preflight after fixing a cfg
 python -m trackmanager.init --project <project.yaml>   # archive sync + preflight report; rerun until clean
-python -m trackmanager.request --root <run> --eb <EB> --priority 1
+python -m trackmanager.request --root <run> --eb <EB> --priority 1 [--path <SDM dir or tar> --size-gb N]
 python -m trackmanager.jobs --root <run> [--eb <EB>] [--status failed] [--csv]
 ```
 
@@ -97,7 +99,7 @@ has it; `scripts/run_controller.sh` installs a pinned copy in headless sessions)
 |---|---|---|
 | `DISCOVERED` | controller | archive sync creates it; preflight runs here and decides the next stage |
 | `AWAITING_DATA` ✋ | operator | `request_state`: `needs_request` → `requested` (M6) |
-| `STAGING` | worker | `activity`: `queued` / `running` (M3) |
+| `STAGING` | worker | `activity`: `queued` / `running`; `stage_attempt`; `stage/manifest.json` |
 | `CALIBRATING` | worker | `activity`: `queued` / `running` / `publishing` |
 | `AWAITING_REVIEW` ✋ | reviewer | `hold` for MANUAL REVIEW / HELP REQUESTED |
 | `PROMOTING` | controller | |
@@ -105,7 +107,7 @@ has it; `scripts/run_controller.sh` installs a pinned copy in headless sessions)
 | `AWAITING_DECISION` ✋ | operator | `reason`: `skip_candidate`, `preflight_failed`, `failed` (+ `failed_from`) |
 
 `trackmanager/states.py` has every allowed edge, and `Controller.set_stage` refuses any other.
-Tracks from the config's `tracks:` and operator requests enter at `CALIBRATING/queued`; tracks found by the archive sync enter at `DISCOVERED`, and preflight sends them to `AWAITING_DATA` (`nrao_link`), `STAGING/queued` (`arc_path`, waits for M3) or `AWAITING_DECISION` (`skip_candidate`: `include` or `skip`; `preflight_failed`: fix the cfgs, then `recheck`). EBs outside `archive.bands_ghz` or in `exclude_ebs` never become tracks. `retry` returns a track to the stage
+Tracks from the config's `tracks:` and operator requests enter at `STAGING/queued` if they name an input (`path`, or `request --path`), else at `CALIBRATING/queued`; tracks found by the archive sync enter at `DISCOVERED`, and preflight sends them to `AWAITING_DATA` (`nrao_link`), `STAGING/queued` (`arc_path`; the input is `inputs.arc_dir/<SDM>[.tar]`) or `AWAITING_DECISION` (`skip_candidate`: `include` or `skip`; `preflight_failed`: fix the cfgs, then `recheck`). EBs outside `archive.bands_ghz` or in `exclude_ebs` never become tracks. `retry` returns a track to the stage
 it failed in. Queued tracks show `queue_position` and `blocked_by` in `state/<EB>.json`.
 
 ## Main settings (`project.yaml`; see `trackmanager/templates/project.yaml`)
@@ -113,7 +115,9 @@ it failed in. Queued tracks show `queue_position` and `blocked_by` in `state/<EB
 | Block / key | Meaning |
 |---|---|
 | `controller.max_workers` | live worker sessions per stage (`calibrate`, `stage`); re-read every cycle; `0` holds the stage, queued tracks go once it is raised |
-| `controller.max_sessions`, `min_free_tb` | shared session cap; shared disk gate (M3) |
+| `controller.max_sessions` | shared cap on live worker sessions across stages |
+| `controller.quota_tb`, `min_free_tb`, `pipeline.disk_factor` | the disk gate: the space's allocation (unset = no gate), the part of it kept free, and calibration's footprint as a multiple of the SDM (re-read every cycle) |
+| `inputs.arc_dir`, `pipeline.stage_worker` | where `stage_local` finds `<SDM>` or `<SDM>.tar` for archive tracks; its command, image and `size_tolerance` |
 | `controller.poll_s`, `grace_s`, `auto_retry`, `relaunch_after_d` | cycle time, how long a new attempt may be invisible, automatic retries, successor handoff (days) |
 | `review.enabled` | `true`: a verified iteration waits in `AWAITING_REVIEW` for a verdict |
 | `pipeline.casa_home`, `qa_deps`, `source_configs`, `repo` | CASA install (the config check fails if `bin/casa` is missing), QAPlotter deps, per-project cfgs (`VLA_PIPELINE_CONFIG_DIR`), ReductionPipeline checkout; they become the worker's environment |
