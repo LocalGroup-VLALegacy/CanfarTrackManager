@@ -60,17 +60,12 @@ def test_failable_stages_are_the_working_stages():
 
 
 def test_pending_edges_are_exactly_the_ones_without_a_handler_yet():
-    """M2 wrote DISCOVERED's handler, so only edges out of AWAITING_DATA and STAGING (M6, M3) and
-    the retry back into STAGING (M3) are still pending."""
+    """M3 wrote stage_local, so STAGING and its retry edge have handlers. Only the edges out of
+    AWAITING_DATA (the pasted link and the skip) wait for M6."""
     pending = {(f, t): e.pending for f, t, e in S.edges() if e.pending}
-    assert pending
-    for (frm, to), milestone in pending.items():
-        assert frm in (S.AWAITING_DATA, S.STAGING) or to == S.STAGING, (frm, to)
-        assert milestone in ("M3", "M6"), (frm, to)
+    assert pending == {(S.AWAITING_DATA, S.STAGING): "M6", (S.AWAITING_DATA, S.SKIPPED): "M6"}
     for frm, to, e in S.edges():
-        if frm in (S.AWAITING_DATA, S.STAGING):
-            assert e.pending in ("M3", "M6"), (frm, to)
-        if S.DISCOVERED in (frm, to):
+        if S.DISCOVERED in (frm, to) or S.STAGING in (frm, to) and frm != S.AWAITING_DATA:
             assert not e.pending, (frm, to)
 
 
@@ -88,8 +83,11 @@ def test_activities():
 
 
 def test_initial_stage_is_a_valid_activity():
-    stage, act = S.initial_stage()
-    S.check_activity(stage, act)
+    for spec in (None, {}, {"path": "/arc/x.tar"}):
+        stage, act = S.initial_stage(None, spec)
+        S.check_activity(stage, act)
+    assert S.initial_stage(None, {"path": "/arc/x.tar"}) == (S.STAGING, S.QUEUED)   # has an input to stage
+    assert S.initial_stage(None, {}) == (S.CALIBRATING, S.QUEUED)
 
 
 def test_sheet_spec_colours_every_stage():

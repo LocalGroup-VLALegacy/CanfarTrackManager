@@ -25,7 +25,7 @@ def apply(ctl):
                 spec = {k: v for k, v in (d.get("spec") or {}).items() if k != "eb"}
                 st = {"eb": eb, "stage": "NEW", "attempt": 0, "hold": False, "spec": spec,
                       "requested_by": d.get("by", "?")}
-                ctl.set_stage(st, *states.initial_stage(ctl.cfg), f"requested by {d.get('by', '?')}")
+                ctl.set_stage(st, *states.initial_stage(ctl.cfg, spec), f"requested by {d.get('by', '?')}")
                 result = "applied"
         elif st and action in REVIEW_ACTIONS:
             result = review.apply(ctl, st, d)

@@ -31,4 +31,4 @@ controller:
 retention: {science_dir: science}
 
 tracks:
-  - {eb: ic10d-eb42455346, config: D, path: /arc/projects/VVINGS/ic10_d_testcase/ic10_d_sdm.tar}
+  - {eb: ic10d-eb42455346, config: D, size_gb: 16.7, path: /arc/projects/VVINGS/ic10_d_testcase/ic10_d_sdm.tar}

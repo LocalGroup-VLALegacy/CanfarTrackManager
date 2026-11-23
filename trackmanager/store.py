@@ -159,3 +159,21 @@ class Root:
 
     def logs(self, eb: str, n: int, k: int) -> Path:
         return self.iter_dir(eb, n) / "logs" / f"attempt_{k}"
+
+    # ---- staging (M3): one attempt series per track, before iteration 1 ----------
+    def raw(self, eb: str) -> Path:
+        return self.track(eb) / "raw"
+
+    def stage_dir(self, eb: str) -> Path:
+        return self.track(eb) / "stage"
+
+    def manifest(self, eb: str) -> Path:
+        """What stage_local verified. Lives beside the attempts, not in raw/, so it outlives the
+        raw data (deleted at DONE) and provenance can still cite it."""
+        return self.stage_dir(eb) / "manifest.json"
+
+    def stage_attempt(self, eb: str, k: int) -> Path:
+        return self.stage_dir(eb) / f"attempt_{k}.json"
+
+    def stage_logs(self, eb: str, k: int) -> Path:
+        return self.stage_dir(eb) / "logs" / f"attempt_{k}"

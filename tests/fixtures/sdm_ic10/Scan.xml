@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ScanTable>
+    <Entity entityId="uid://evla/sdm/X1658825811040" entityIdEncrypted="na" entityTypeName="ScanTable" schemaVersion="4" documentVersion="1"/>
+    <ContainerEntity entityId="uid://evla/sdm/X1658825811011" entityIdEncrypted="na" entityTypeName="ASDM" schemaVersion="4" documentVersion="1"/>
+    <row>
+        <scanNumber>1</scanNumber>
+        <startTime>5165542611500000256</startTime>
+        <endTime>5165542667299999744</endTime>
+        <numIntent>1</numIntent>
+        <numSubscan>1</numSubscan>
+        <scanIntent>1 1 SYSTEM_CONFIGURATION</scanIntent>
+        <calDataType>1 1 NONE</calDataType>
+        <calibrationOnLine>1 1 false</calibrationOnLine>
+        <sourceName>3C48</sourceName>
+        <execBlockId>ExecBlock_0</execBlockId>
+    </row>
+    <row>
+        <scanNumber>2</scanNumber>
+        <startTime>5165542667299999744</startTime>
+        <endTime>5165542727150000128</endTime>
+        <numIntent>1</numIntent>
+        <numSubscan>1</numSubscan>
+        <scanIntent>1 1 SYSTEM_CONFIGURATION</scanIntent>
+        <calDataType>1 1 NONE</calDataType>
+        <calibrationOnLine>1 1 false</calibrationOnLine>
+        <sourceName>3C48</sourceName>
+        <execBlockId>ExecBlock_0</execBlockId>
+    </row>
+    <row>
+        <scanNumber>3</scanNumber>
+        <startTime>5165542727150000128</startTime>
+        <endTime>5165543026300000256</endTime>
+        <numIntent>3</numIntent>
+        <numSubscan>1</numSubscan>
+        <scanIntent>1 3 CALIBRATE_FLUX CALIBRATE_BANDPASS CALIBRATE_DELAY</scanIntent>
+        <calDataType>1 3 NONE NONE NONE</calDataType>
+        <calibrationOnLine>1 3 false false false</calibrationOnLine>
+        <sourceName>3C48</sourceName>
+        <execBlockId>ExecBlock_0</execBlockId>
+    </row>
+    <row>
+        <scanNumber>4</scanNumber>
+        <startTime>5165543026300000256</startTime>
+        <endTime>5165543325500000256</endTime>
+        <numIntent>3</numIntent>
+        <numSubscan>1</numSubscan>
+        <scanIntent>1 3 CALIBRATE_FLUX CALIBRATE_BANDPASS CALIBRATE_DELAY</scanIntent>
+        <calDataType>1 3 NONE NONE NONE</calDataType>
+        <calibrationOnLine>1 3 false false false</calibrationOnLine>
+        <sourceName>3C48</sourceName>
+        <execBlockId>ExecBlock_0</execBlockId>
+    </row>
+    <row>
+        <scanNumber>5</scanNumber>
+        <startTime>5165543325500000256</startTime>
+        <endTime>5165543624650000384</endTime>
+        <numIntent>2</numIntent>
+        <numSubscan>1</numSubscan>
+        <scanIntent>1 2 CALIBRATE_AMPLI CALIBRATE_PHASE</scanIntent>
+        <calDataType>1 2 NONE NONE</calDataType>
+        <calibrationOnLine>1 2 false false</calibrationOnLine>
+        <sourceName>J0102+5824</sourceName>
+        <execBlockId>ExecBlock_0</execBlockId>
+    </row>
+    <row>
+        <scanNumber>6</scanNumber>
+        <startTime>5165543624650000384</startTime>
+        <endTime>5165543923850000384</endTime>
+        <numIntent>1</numIntent>
+        <numSubscan>1</numSubscan>
+        <scanIntent>1 1 OBSERVE_TARGET</scanIntent>
+        <calDataType>1 1 NONE</calDataType>
+        <calibrationOnLine>1 1 false</calibrationOnLine>
+        <sourceName>IC10_1_CTR</sourceName>
+        <execBlockId>ExecBlock_0</execBlockId>
+    </row>
+    <row>
+        <scanNumber>7</scanNumber>
+        <startTime>5165543923850000384</startTime>
+        <endTime>5165544103349999616</endTime>
+        <numIntent>2</numIntent>
+        <numSubscan>1</numSubscan>
+        <scanIntent>1 2 CALIBRATE_AMPLI CALIBRATE_PHASE</scanIntent>
+        <calDataType>1 2 NONE NONE</calDataType>
+        <calibrationOnLine>1 2 false false</calibrationOnLine>
+        <sourceName>J0102+5824</sourceName>
+        <execBlockId>ExecBlock_0</execBlockId>
+    </row>
+</ScanTable>

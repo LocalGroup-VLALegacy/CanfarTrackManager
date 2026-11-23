@@ -8,7 +8,7 @@
                   skip candidate        -> AWAITING_DECISION, reason skip_candidate
                                            (operator sends `include` or `skip`)
                   ok, nrao_link         -> AWAITING_DATA, request_state needs_request  (M6 acts)
-                  ok, arc_path          -> STAGING, queued                             (M3 acts)
+                  ok, arc_path          -> STAGING, queued                             (stage_local acts)
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def sync(ctl):
         if read_json(ctl.r.state(eb)) is None:
             rec = res.kept[eb]
             st = {"eb": eb, "stage": "NEW", "iteration": 1, "attempt": 0, "hold": False,
-                  "spec": {"config": rec["config"], "source": "archive"}}
+                  "spec": {"config": rec["config"], "source": "archive", "sdm": rec["sdm"]}}
             ctl.set_stage(st, S.DISCOVERED, None, "found by archive sync")
     for eb, diff in res.changed.items():
         st = read_json(ctl.r.state(eb)) or {}

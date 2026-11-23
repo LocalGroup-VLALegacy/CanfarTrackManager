@@ -13,6 +13,7 @@ project:
 inputs:
   source: arc_path                          # nrao_link | arc_path (SDM directory or NRAO tar)
   eb_list: archive                          # archive | file:<csv>
+  arc_dir: null                             # arc_path + archive tracks: <arc_dir>/<SDM> (directory) or <SDM>.tar
 
 archive:                                    # (M2)
   tap_url: https://data-query.nrao.edu/tap
@@ -44,6 +45,11 @@ pipeline:
   worker:                                   # what a worker session runs (defaults shown)
     cmd: bash
     # args: <repo>/workers/calibrate_worker.sh
+  stage_worker:                             # the stage_local session (defaults shown)
+    # image: <controller.image>
+    cmd: python3
+    # args: <repo>/trackmanager/stage_worker.py
+    size_tolerance: 0.05                    # staged bytes may differ from the TAP estimate by this fraction
   env: {}                                   # extra worker environment for every track
 
 qa:
@@ -71,9 +77,10 @@ controller:
   poll_s: 300
   grace_s: 900                              # a new attempt may be invisible for this long
   relaunch_after_d: 5                       # days; hand off to a successor (cert and 14-day limit)
-  max_workers: {calibrate: 20}              # per worker stage, re-read every cycle; 0 holds a stage
+  max_workers: {calibrate: 20}              # per worker stage (calibrate, stage; stage defaults to 4); re-read every cycle; 0 holds a stage
   max_sessions: null                        # shared cap across stages
-  min_free_tb: null                         # shared disk gate (M3)
+  quota_tb: null                            # the space's allocation; null turns the disk gate off
+  min_free_tb: null                         # the gate keeps this much of quota_tb unreserved
   auto_retry: 1
   keep_running: false                       # true: stay up when every track has settled
   cancel_successor_on_finish: true
@@ -87,4 +94,4 @@ retention:
 
 # Tracks seeded from this file until archive sync (M2) discovers them.
 tracks: []
-# - {eb: <EB name>, priority: 0, config: D, path: /arc/projects/<space>/<sdm dir or tar>}
+# - {eb: <EB name>, priority: 0, config: D, size_gb: 16.6, path: /arc/projects/<space>/<sdm dir or tar>}

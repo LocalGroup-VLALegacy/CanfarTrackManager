@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<MainTable>
+    <Entity entityId="uid://evla/sdm/X1658825811032" entityIdEncrypted="na" entityTypeName="MainTable" schemaVersion="4" documentVersion="1"/>
+    <ContainerEntity entityId="uid://evla/sdm/X1658825811011" entityIdEncrypted="na" entityTypeName="ASDM" schemaVersion="4" documentVersion="1"/>
+    <row>
+        <time>5165542639400000000</time>
+        <numAntenna>27</numAntenna>
+        <timeSampling>INTEGRATION</timeSampling>
+        <interval>55799999488</interval>
+        <numIntegration>10</numIntegration>
+        <scanNumber>1</scanNumber>
+        <subscanNumber>1</subscanNumber>
+        <dataSize>562932474</dataSize>
+        <dataUID>
+            <EntityRef entityId="uid:///evla/bdf/1658825814079" partId="X00000000" entityTypeName="Main" documentVersion="1"/>
+        </dataUID>
+        <configDescriptionId>ConfigDescription_0</configDescriptionId>
+        <execBlockId>ExecBlock_0</execBlockId>
+        <fieldId>Field_0</fieldId>
+        <stateId>1 27 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0</stateId>
+    </row>
+    <row>
+        <time>5165542697224999936</time>
+        <numAntenna>27</numAntenna>
+        <timeSampling>INTEGRATION</timeSampling>
+        <interval>59850000384</interval>
+        <numIntegration>11</numIntegration>
+        <scanNumber>2</scanNumber>
+        <subscanNumber>1</subscanNumber>
+        <dataSize>619225039</dataSize>
+        <dataUID>
+            <EntityRef entityId="uid:///evla/bdf/1658825814086" partId="X00000000" entityTypeName="Main" documentVersion="1"/>
+        </dataUID>
+        <configDescriptionId>ConfigDescription_0</configDescriptionId>
+        <execBlockId>ExecBlock_0</execBlockId>
+        <fieldId>Field_0</fieldId>
+        <stateId>1 27 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0</stateId>
+    </row>
+    <row>
+        <time>5165542876725000192</time>
+        <numAntenna>27</numAntenna>
+        <timeSampling>INTEGRATION</timeSampling>
+        <interval>299150000128</interval>
+        <numIntegration>59</numIntegration>
+        <scanNumber>3</scanNumber>
+        <subscanNumber>1</subscanNumber>
+        <dataSize>3321268159</dataSize>
+        <dataUID>
+            <EntityRef entityId="uid:///evla/bdf/1658825867326" partId="X00000000" entityTypeName="Main" documentVersion="1"/>
+        </dataUID>
+        <configDescriptionId>ConfigDescription_0</configDescriptionId>
+        <execBlockId>ExecBlock_0</execBlockId>
+        <fieldId>Field_0</fieldId>
+        <stateId>1 27 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0</stateId>
+    </row>
+    <row>
+        <time>5165543175900000256</time>
+        <numAntenna>27</numAntenna>
+        <timeSampling>INTEGRATION</timeSampling>
+        <interval>299200000000</interval>
+        <numIntegration>59</numIntegration>
+        <scanNumber>4</scanNumber>
+        <subscanNumber>1</subscanNumber>
+        <dataSize>3321268159</dataSize>
+        <dataUID>
+            <EntityRef entityId="uid:///evla/bdf/1658825927165" partId="X00000000" entityTypeName="Main" documentVersion="1"/>
+        </dataUID>
+        <configDescriptionId>ConfigDescription_0</configDescriptionId>
+        <execBlockId>ExecBlock_0</execBlockId>
+        <fieldId>Field_0</fieldId>
+        <stateId>1 27 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0</stateId>
+    </row>
+    <row>
+        <time>5165543475075000320</time>
+        <numAntenna>27</numAntenna>
+        <timeSampling>INTEGRATION</timeSampling>
+        <interval>299150000128</interval>
+        <numIntegration>58</numIntegration>
+        <scanNumber>5</scanNumber>
+        <subscanNumber>1</subscanNumber>
+        <dataSize>3264975594</dataSize>
+        <dataUID>
+            <EntityRef entityId="uid:///evla/bdf/1658826226318" partId="X00000000" entityTypeName="Main" documentVersion="1"/>
+        </dataUID>
+        <configDescriptionId>ConfigDescription_0</configDescriptionId>
+        <execBlockId>ExecBlock_0</execBlockId>
+        <fieldId>Field_1</fieldId>
+        <stateId>1 27 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0</stateId>
+    </row>
+    <row>
+        <time>5165543774250000384</time>
+        <numAntenna>27</numAntenna>
+        <timeSampling>INTEGRATION</timeSampling>
+        <interval>299200000000</interval>
+        <numIntegration>59</numIntegration>
+        <scanNumber>6</scanNumber>
+        <subscanNumber>1</subscanNumber>
+        <dataSize>3321268159</dataSize>
+        <dataUID>
+            <EntityRef entityId="uid:///evla/bdf/1658826525520" partId="X00000000" entityTypeName="Main" documentVersion="1"/>
+        </dataUID>
+        <configDescriptionId>ConfigDescription_0</configDescriptionId>
+        <execBlockId>ExecBlock_0</execBlockId>
+        <fieldId>Field_2</fieldId>
+        <stateId>1 27 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0</stateId>
+    </row>
+    <row>
+        <time>5165544013600000000</time>
+        <numAntenna>27</numAntenna>
+        <timeSampling>INTEGRATION</timeSampling>
+        <interval>179499999232</interval>
+        <numIntegration>35</numIntegration>
+        <scanNumber>7</scanNumber>
+        <subscanNumber>1</subscanNumber>
+        <dataSize>1970246599</dataSize>
+        <dataUID>
+            <EntityRef entityId="uid:///evla/bdf/1658826824667" partId="X00000000" entityTypeName="Main" documentVersion="1"/>
+        </dataUID>
+        <configDescriptionId>ConfigDescription_0</configDescriptionId>
+        <execBlockId>ExecBlock_0</execBlockId>
+        <fieldId>Field_1</fieldId>
+        <stateId>1 27 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0 State_0</stateId>
+    </row>
+</MainTable>

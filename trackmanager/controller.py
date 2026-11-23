@@ -6,7 +6,8 @@ Each cycle (plan §3.3) it:
   3. applies operator and reviewer input from inbox/ (inbox.py, review.py);
   4. runs the handler for every track's (stage, activity) (HANDLERS below): reconcile a running
      calibrate attempt (live -> wait; terminal -> save info/logs/events, then verify outputs;
-     missing -> verify outputs, since records are kept ~1 h), publish QA, promote;
+     missing -> verify outputs, since records are kept ~1 h), the same for a stage_local attempt
+     (STAGING: verify stage/manifest.json), publish QA, promote;
   5. submits queued tracks that scheduler.plan admits: attempt file first, then create(), then
      record the IDs. Per-stage max_workers, a shared max_sessions and one admit() gate decide;
      every live session with this project's worker prefix takes a slot, orphans included. The
@@ -16,7 +17,7 @@ Each cycle (plan §3.3) it:
 
 Stages and their edges are in states.py (10 stages; progress inside a stage is the `activity`
 field). Tracks come from project.yaml's `tracks` and from "request" actions in inbox/
-(trackmanager.request); they enter at CALIBRATING/queued until the upstream stages exist (M2, M3).
+(trackmanager.request); they enter at STAGING/queued when they name an input (`path`), else at CALIBRATING/queued.
 With review.enabled, a verified iteration goes to AWAITING_REVIEW; the verdict is "pass"
 (-> PROMOTING -> DONE) or "restart" (-> CALIBRATING/queued as iteration n+1, with the decision's flag
 and refant files frozen in iter_<n+1>/inputs/). Failures go to AWAITING_DECISION and remember where
@@ -65,22 +66,23 @@ from pathlib import Path
 
 from . import archive
 from . import config as projconfig
-from . import inbox, qa, scheduler
+from . import disk, inbox, qa, scheduler
 from . import jobs as joblog
 from . import states as S
-from .stages import calibrate, discover, promote, qa_publish
+from .stages import calibrate, discover, promote, qa_publish, stage_local
 from .backend import LIVE, make_backend
 from .store import Root, age_s, append_jsonl, iso, log, read_json, write_json
 
 REPO = Path(__file__).resolve().parent.parent
 # What the cycle does for a track, by (stage, activity) or by stage. Submitting is separate:
 # queued tracks of a worker stage go through SUBMITTERS once the scheduler admits them.
-# M3 and M6 register `stage_local` and `fetch_raw` under STAGING.
+# M6 adds `fetch_raw` beside `stage_local` under STAGING.
 HANDLERS = {S.DISCOVERED: discover.run,
+            (S.STAGING, S.RUNNING): stage_local.reconcile,
             (S.CALIBRATING, S.RUNNING): calibrate.reconcile,
             (S.CALIBRATING, S.PUBLISHING): qa_publish.run,
             S.PROMOTING: promote.run}
-SUBMITTERS = {S.CALIBRATING: calibrate.submit}
+SUBMITTERS = {S.STAGING: stage_local.submit, S.CALIBRATING: calibrate.submit}
 
 
 def cert_info():
@@ -116,6 +118,7 @@ class Controller:
         self.sessions: list[dict] = []
         self.orphans: set[str] = set()
         self.workers: dict = {}
+        self.disk: dict = {}
         self.cycle_cache: dict = {}  # per-cycle values shared by handlers (reset in cycle())
 
     # ---- database helpers ------------------------------------------------
@@ -127,13 +130,14 @@ class Controller:
         ids = att.get("ids") or []
         append_jsonl(self.r.jobs, {"ts": iso(), "eb": eb, "iteration": n, "attempt": k, "kind": "calibrate",
                                    "name": att["name"], "job_id": ids[0] if ids else None,
-                                   "log_dir": str(self.r.logs(eb, n, k)), **fields})
+                                   **({} if "log_dir" in fields else {"log_dir": str(self.r.logs(eb, n, k))}),
+                                   **fields})
 
     def load_state(self, eb):
         st = read_json(self.r.state(eb))
         if st is None:
             st = {"eb": eb, "stage": "NEW", "iteration": 1, "attempt": 0, "hold": False}
-            self.set_stage(st, *S.initial_stage(self.cfg), "discovered from config")
+            self.set_stage(st, *S.initial_stage(self.cfg, self.spec(st)), "discovered from config")
         return st
 
     def track_ids(self):
@@ -209,13 +213,21 @@ class Controller:
         act = st.get("failed_activity")
         if act == S.RUNNING or (act is None and to in S.ACTIVITIES):
             act = S.QUEUED  # a failed run is submitted again; a failed publish is just retried
-        for key in ("failed_from", "failed_activity", "reason", "failure_class", "publish_failures"):
+        for key in ("failed_from", "failed_activity", "reason", "failure_class", "publish_failures",
+                    "raw_delete_failures"):
             st.pop(key, None)
         self.set_stage(st, to, act if to in S.ACTIVITIES else None, f"operator {action} ({by})")
 
     def session_name(self, eb, n, k):
+        """<prefix><run tag>-<eb>-i<iteration>-a<attempt> for a calibrate attempt; staging (n is
+        None) has no iteration: <prefix><run tag>-<eb>-stage-a<attempt>."""
         clean = re.sub(r"[^a-z0-9-]", "-", eb.lower()).strip("-")
-        return f"{self.prefix}{self.tag}-{clean}-i{n}-a{k}"[:60]
+        return f"{self.prefix}{self.tag}-{clean}-{'stage' if n is None else f'i{n}'}-a{k}"[:60]
+
+    @staticmethod
+    def worker_kind(name):
+        """Which worker kind a session name belongs to (see session_name)."""
+        return "stage" if re.search(r"-stage-a\d+$", name or "") else "calibrate"
 
     # ---- lease -----------------------------------------------------------
     def stale(self, lease):
@@ -300,8 +312,8 @@ class Controller:
         expected = set()
         for st in tracks:
             if scheduler.is_running(st):
-                att = read_json(self.r.attempt(st["eb"], st.get("iteration", 1), st["attempt"])) or {}
-                expected.add(att.get("name"))
+                ref = (stage_local if st["stage"] == S.STAGING else calibrate).attempt_ref(self, st)
+                expected.add((read_json(ref.path) or {}).get("name"))
         orphans = {s["id"]: s["name"] for s in self.sessions
                    if s["status"] in LIVE and self.is_worker_name(s.get("name"))
                    and s["name"] not in expected}
@@ -309,11 +321,12 @@ class Controller:
             self.event("-", "workers", "orphan", f"live worker session {sid} ({orphans[sid]}) is not "
                        "a current attempt in the database; it takes a slot until it ends")
         self.orphans = set(orphans)
-        # Orphans are counted against the calibrate kind: it is the only worker kind with a
-        # name-prefix match until a second kind needs its own segment in the session name.
-        plan = scheduler.plan(tracks, limits, {"calibrate": len(orphans)},
+        by_kind = {kind: sum(self.worker_kind(n) == kind for n in orphans.values())
+                   for kind in S.WORKER_KINDS}
+        gate = disk.Gate(tracks, limits, self.spec)
+        plan = scheduler.plan(tracks, limits, by_kind, admit=gate.admit,
                               priority=lambda st: self.spec(st).get("priority", 0))
-        submitted = 0
+        self.disk = gate.summary()
         for st in plan.submit:
             submit = SUBMITTERS.get(st["stage"])
             if submit is None:  # a worker stage whose handler is not written yet
@@ -321,7 +334,6 @@ class Controller:
                                           "blocked_by": f"no handler for {st['stage']} in this build"}
                 continue
             submit(self, st)
-            submitted += st["stage"] == S.CALIBRATING
         for st in tracks:
             w = plan.waiting.get(st["eb"])
             want = (w["position"], w["blocked_by"]) if w else (None, None)
@@ -332,12 +344,14 @@ class Controller:
                     st.update(queue_position=w["position"], blocked_by=w["blocked_by"])
                 write_json(self.r.state(st["eb"]), st)
         if plan.waiting:
-            log(f"{len(plan.waiting)} track(s) queued; {plan.in_use.get('calibrate', 0)}/"
-                f"{limits.max_workers.get('calibrate', 0)} calibrate slots in use")
+            log(f"{len(plan.waiting)} track(s) queued; " + ", ".join(
+                f"{plan.in_use.get(k, 0)}/{limits.max_workers.get(k, 0)} {k} slots in use"
+                for k in S.WORKER_KINDS))
         running = sum(scheduler.is_running(st) for st in tracks if st["stage"] == S.CALIBRATING)
         self.workers = {"limit": limits.max_workers.get("calibrate", 0), "limits": limits.max_workers,
                         "max_sessions": limits.max_sessions, "in_use": plan.in_use.get("calibrate", 0),
-                        "running_tracks": running, "orphans": sorted(orphans),
+                        "running_tracks": running, "in_use_by_kind": dict(plan.in_use),
+                        "orphans": sorted(orphans),
                         "queued": len(plan.waiting), "held": plan.held}
 
     @staticmethod
@@ -375,14 +389,15 @@ class Controller:
     # ---- summaries and handoff ------------------------------------------
     def write_summaries(self, states):
         write_json(self.r.summary, {"ts": iso(), "controller": self.me, "cycle": self.cycle_n,
-                                    "workers": self.workers,
+                                    "workers": self.workers, "disk": self.disk,
                                     "archive": {**(read_json(self.r.archive_dir / "sync.json") or {}),
                                                 "alarm": archive.alarm(self.r)} if archive.enabled(self.cfg) else None,
                                     "qa_home_url": qa.qa_url(self, self.base_dir("products_dir") / "index.html"),
                                     "ebs": {eb: {k: st.get(k) for k in
                                                  ("stage", "activity", "iteration", "attempt", "detail", "updated",
                                                   "hold", "hold_reason", "reason", "queued_at", "queue_position",
-                                                  "blocked_by", "qa_url", "request_state", "est_size_gb")}
+                                                  "blocked_by", "qa_url", "request_state", "est_size_gb",
+                                                  "sdm_bytes", "stage_attempt")}
                                             for eb, st in states.items()}})
         try:
             qa.write_index(self, states)

@@ -13,7 +13,6 @@ TEMPLATE = REPO / "trackmanager" / "templates" / "project.yaml"
 # What examples/project_ic10.json spelled out by hand (worker.env) plus what the controller
 # added from its own settings, before M1. The YAML must derive exactly this.
 LEGACY_IC10_ENV = {
-    "TAR": "/arc/projects/VVINGS/ic10_d_testcase/ic10_d_sdm.tar",
     "PIPELINE": "/arc/home/ekoch/vla_processing/ReductionPipeline",
     "CASA_WRAPPER": "/arc/home/ekoch/vla_processing/CanfarTrackManager/casa/casa_with_limits.sh",
     "SDM_MODE": "link",
@@ -40,7 +39,8 @@ def minimal(**over):
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
 def test_examples_load_without_path_checks(path):
     cfg = C.load(path, check_paths=False)
-    assert cfg.name and cfg.tracks
+    # archive projects (M2) get their tracks from TAP, so `tracks:` may be empty
+    assert cfg.name and (cfg.tracks or cfg.project.vla_project_codes)
     assert cfg.limits().max_workers
 
 
@@ -140,16 +140,16 @@ def test_path_checks_refuse_a_missing_casa_and_configs(tmp_path):
 def test_reload_limits_picks_up_edits_and_survives_mistakes(tmp_path):
     p = write(tmp_path, minimal(controller={"max_workers": {"calibrate": 1}}))
     cfg = C.load(p, check_paths=False)
-    assert cfg.limits().max_workers == {"calibrate": 1}
+    assert cfg.limits().max_workers == {"stage": 4, "calibrate": 1}   # stage defaults to 4
     write(tmp_path, minimal(controller={"max_workers": {"calibrate": 5}, "max_sessions": 7}))
     lim = cfg.reload_limits()
-    assert lim.max_workers == {"calibrate": 5} and lim.max_sessions == 7
+    assert lim.max_workers["calibrate"] == 5 and lim.max_sessions == 7
     p.write_text("controller: {max_workers: [oops\n")           # broken YAML
-    assert cfg.reload_limits().max_workers == {"calibrate": 5}
+    assert cfg.reload_limits().max_workers["calibrate"] == 5
     write(tmp_path, minimal(controller={"max_workers": {"nope": 1}}))   # fails validation
-    assert cfg.reload_limits().max_workers == {"calibrate": 5}
+    assert cfg.reload_limits().max_workers["calibrate"] == 5
     write(tmp_path, minimal(controller={"max_workers": {"calibrate": 0}}))
-    assert cfg.reload_limits().max_workers == {"calibrate": 0}   # 0 is a valid hold
+    assert cfg.reload_limits().max_workers["calibrate"] == 0   # 0 is a valid hold
 
 
 def test_cli_get_and_check(tmp_path, capsys):
@@ -157,3 +157,51 @@ def test_cli_get_and_check(tmp_path, capsys):
     assert capsys.readouterr().out.strip()
     C.main([str(REPO / "examples" / "project_fake.yaml")])
     assert '"project"' in capsys.readouterr().out
+
+
+def test_stage_workers_default_but_can_be_set_or_held(tmp_path):
+    cfg = C.load(write(tmp_path, minimal(controller={"max_workers": {"calibrate": 2}})), check_paths=False)
+    assert cfg.limits().max_workers == {"stage": C.DEFAULT_STAGE_WORKERS, "calibrate": 2}
+    cfg = C.load(write(tmp_path, minimal(controller={"max_workers": {"calibrate": 2, "stage": 0}})),
+                 check_paths=False)
+    assert cfg.limits().max_workers["stage"] == 0
+
+
+def test_disk_gate_settings_reload_and_validate(tmp_path):
+    p = write(tmp_path, minimal(controller={"quota_tb": 10, "min_free_tb": 2}, pipeline={"disk_factor": 6}))
+    cfg = C.load(p, check_paths=False)
+    lim = cfg.limits()
+    assert (lim.quota_tb, lim.min_free_tb, lim.disk_factor) == (10, 2, 6)
+    write(tmp_path, minimal(controller={"quota_tb": 20, "min_free_tb": 3}, pipeline={"disk_factor": 7}))
+    lim = cfg.reload_limits()
+    assert (lim.quota_tb, lim.min_free_tb, lim.disk_factor) == (20, 3, 7)
+    for bad, msg in [({"quota_tb": 0}, "quota_tb must be positive"),
+                     ({"quota_tb": 2, "min_free_tb": 2}, "smaller than"),
+                     ({"min_free_tb": -1}, "min_free_tb must be >= 0")]:
+        with pytest.raises(C.ConfigError, match=msg):
+            C.load(write(tmp_path, minimal(controller=bad)), check_paths=False)
+    write(tmp_path, minimal(controller={"quota_tb": -5}))      # a bad live edit keeps the old limits
+    assert cfg.reload_limits().quota_tb == 20
+
+
+def test_input_path_prefers_the_track_path_then_arc_dir(tmp_path):
+    (tmp_path / "in" / "sdm1").mkdir(parents=True)
+    (tmp_path / "in" / "sdm2.tar").write_text("x")
+    cfg = C.load(write(tmp_path, minimal(inputs={"arc_dir": str(tmp_path / "in")})), check_paths=False)
+    assert cfg.input_path({"path": "/elsewhere/x.tar"}) == Path("/elsewhere/x.tar")
+    assert cfg.input_path({"sdm": "sdm1"}) == tmp_path / "in" / "sdm1"        # a directory
+    assert cfg.input_path({"sdm": "sdm2"}) == tmp_path / "in" / "sdm2.tar"    # a tar
+    assert cfg.input_path({"sdm": "missing"}) == tmp_path / "in" / "missing"  # the stage worker reports it
+    assert cfg.input_path({}) is None
+    bare = C.load(write(tmp_path, minimal(), name="b.yaml"), check_paths=False)
+    assert bare.input_path({"sdm": "sdm1"}) is None
+
+
+def test_stage_worker_defaults(tmp_path):
+    cfg = C.load(write(tmp_path, minimal()), check_paths=False)
+    assert cfg.stage_worker_args() == str(REPO / "trackmanager" / "stage_worker.py")
+    assert cfg.stage_image() == cfg.controller.image
+    cfg = C.load(write(tmp_path, minimal(pipeline={"stage_worker": {"image": "x/y:1"}})), check_paths=False)
+    assert cfg.stage_image() == "x/y:1"
+    with pytest.raises(C.ConfigError, match="size_tolerance"):
+        C.load(write(tmp_path, minimal(pipeline={"stage_worker": {"size_tolerance": 1.5}})), check_paths=False)

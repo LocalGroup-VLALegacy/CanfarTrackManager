@@ -1,0 +1,30 @@
+# M3 real-scheduler check R1b: a calibrate worker killed for exceeding a 1 GB request must be classified oom.
+#   bash scripts/submit_controller.sh examples/m3/project_m3e.yaml
+project:
+  name: m3e
+  root: /arc/projects/VVINGS/vla-calib-mwe/runs/m3e
+  session_prefix: tm
+
+inputs: {source: arc_path}
+
+pipeline:
+  image: images.canfar.net/skaha/base-notebook:latest
+  repo: /arc/home/ekoch/vla_processing/ReductionPipeline
+  source_configs: /arc/projects/VVINGS/vla-calib-mwe/config/ic10/pipeline
+  worker: {cmd: python3, args: trackmanager/worker.py}
+  stage_worker: {cmd: python3}
+  resources:
+    default: {cores: null, ram: null}
+    by_config: {X: {cores: 1, ram: 1}}
+
+review: {enabled: false}
+
+controller:
+  image: images.canfar.net/skaha/base-notebook:latest
+  poll_s: 30
+  grace_s: 600
+  auto_retry: 0
+  max_workers: {calibrate: 1, stage: 1}
+
+tracks:
+  - {eb: m3e-oom, config: X, path: /arc/projects/VVINGS/ic10_d_testcase/test_track/20A-346.sb42440562.eb42455346.59786.372811249996, mode: oom}

@@ -2,29 +2,19 @@
 
 Each function takes the controller (`ctl`) for its database, backend, config and event log."""
 from __future__ import annotations
-import json
-
 from .. import qa, retention
 from .. import states as S
-from ..backend import LIVE, TERMINAL
-from ..store import age_s, create_json, iso, log, read_json, write_json
+from ..backend import LIVE
+from ..store import iso, read_json, write_json
 from . import qa_publish
+from .workers import Attempt, classify, create, peak_anon, platform_text, submit_session  # noqa: F401 (classify re-exported)
+from . import workers
 
 
-def classify(status, run, platform_text):
-    """failure_class for a failed attempt (plan §3.2 job database)."""
-    text = (platform_text or "").lower()
-    if run and run.get("exit_code") == 0:
-        return "no_output"
-    if run and run.get("exit_code") not in (None, 0):
-        return "failed"
-    if "oomkilled" in text or "out of memory" in text:
-        return "oom"
-    if "deadline" in text:
-        return "deadline"
-    if status in TERMINAL:
-        return "failed"
-    return "lost"
+def attempt_ref(ctl, st, k=None) -> Attempt:
+    eb, n = st["eb"], st.get("iteration", 1)
+    k = st["attempt"] if k is None else k
+    return Attempt("calibrate", eb, ctl.r.attempt(eb, n, k), ctl.r.logs(eb, n, k), n, k, S.CALIBRATING)
 
 
 def submit(ctl, st):
@@ -48,85 +38,18 @@ def submit(ctl, st):
                        "args": ctl.cfg.worker_args(), "env": env,
                        "cores": res.cores, "ram": res.ram},
            "ids": None, "last_status": None, "platform_saved": False}
-    try:
-        create_json(ctl.r.attempt(eb, n, k), att)  # attempt file before any API call
-    except FileExistsError:
-        log(f"{eb}: iter_{n}/attempt_{k}.json already exists; reconciling it instead of resubmitting")
+    a = attempt_ref(ctl, st, k)
+    if not create(a, att):
         st["attempt"] = k
         ctl.set_activity(st, S.RUNNING, f"found existing iteration {n} attempt {k}")
         return
     st["attempt"] = k
     ctl.set_activity(st, S.RUNNING, f"submitting iteration {n} attempt {k}")
-    rq = att["request"]
-    try:
-        ids = ctl.backend.create(att["name"], rq["image"], rq["cmd"], rq["args"], env,
-                                  rq["cores"], rq["ram"])
-        if eb in ctl.lose_response:
-            log(f"{eb}: simulating a lost create() response (discarding {ids})")
-            ctl.lose_response.discard(eb)
-            ids = []
-    except Exception as e:
-        att["create_error"] = repr(e)
-        ids = []
-    att["ids"] = ids or None
-    att["created_at"] = iso()
-    write_json(ctl.r.attempt(eb, n, k), att)
-    ctl.job_row(eb, n, k, att, status="submitted" if ids else "submit_unconfirmed",
-                 cores=rq["cores"], ram=rq["ram"], image=rq["image"])
+    submit_session(ctl, a, att, env)
 
 
 def reconcile(ctl, st):
-    eb, n, k = st["eb"], st.get("iteration", 1), st["attempt"]
-    att = read_json(ctl.r.attempt(eb, n, k))
-    sess = None
-    if att.get("ids"):
-        sess = next((s for s in ctl.sessions if s["id"] == att["ids"][0]), None)
-    if sess is None:
-        cands = ctl.by_name(att["name"])
-        sess = cands[0] if cands else None
-        if sess and not att.get("ids"):
-            att["ids"] = [sess["id"]]
-            att["adopted"] = True
-            write_json(ctl.r.attempt(eb, n, k), att)
-            ctl.event(eb, S.CALIBRATING, S.CALIBRATING, f"adopted session {sess['id']} by name "
-                       "after an unconfirmed create()")
-            ctl.job_row(eb, n, k, att, status="adopted")
-    status = sess["status"] if sess else None
-
-    if status in LIVE:
-        if status != att.get("last_status"):
-            att["last_status"] = status
-            att.setdefault("first_seen", {})[status] = iso()
-            write_json(ctl.r.attempt(eb, n, k), att)
-            ctl.job_row(eb, n, k, att, status=status)
-        return
-    if status in TERMINAL and not att.get("platform_saved"):
-        save_platform(ctl, ctl.r.logs(eb, n, k), att, sess["id"])
-        att["platform_status"] = status
-    if status is None:
-        if att.get("last_status") is None and (age_s(att["requested_at"]) or 0) < ctl.cfg.controller.grace_s:
-            return  # never listed yet: create() may be accepted but not visible
-        att["platform_status"] = att.get("platform_status") or "missing"
-    att["last_status"] = status or "missing"
-    write_json(ctl.r.attempt(eb, n, k), att)
-    verify(ctl, st, att)
-
-
-def save_platform(ctl, d, att, sid):
-    d.mkdir(parents=True, exist_ok=True)
-    errors = {}
-    for name, fn, fname in (("info", ctl.backend.info, "session_info.json"),
-                            ("events", ctl.backend.events, "events.txt"),
-                            ("logs", ctl.backend.logs, "session.log")):
-        try:
-            out = fn(sid)
-            text = out if isinstance(out, str) else json.dumps(out, indent=1, default=str)
-            (d / fname).write_text(text or "")
-        except Exception as e:
-            errors[name] = repr(e)
-    att["platform_saved"] = iso()
-    if errors:
-        att["platform_errors"] = errors
+    workers.reconcile(ctl, st, attempt_ref(ctl, st), verify)
 
 
 def verify(ctl, st, att):
@@ -151,11 +74,9 @@ def verify(ctl, st, att):
                                            f"(platform: {common['platform_status']})")
         qa_publish.run(ctl, st)
         return
-    text = ""
-    for f in ("events.txt", "session_info.json", "session.log"):
-        p = ctl.r.logs(eb, n, k) / f
-        text += p.read_text(errors="ignore") if p.exists() else ""
-    fclass = classify(att.get("platform_status"), run, text)
+    a = attempt_ref(ctl, st)
+    fclass = classify(att.get("platform_status"), run, platform_text(a), peak_anon(a),
+                      att.get("request", {}).get("ram"))
     att["outcome"] = fclass
     write_json(ctl.r.attempt(eb, n, k), att)
     ctl.job_row(eb, n, k, att, status="failed_verification", failure_class=fclass, **common)
