@@ -13,7 +13,7 @@ bridge reuses it to raise an alarm on drift (without changing anything).
 """
 from __future__ import annotations
 
-from . import qa, sheets
+from . import gsheets, qa, sheets
 from .store import iso
 
 TIME_ZONE = "Etc/GMT"      # stamps are written in UTC; the sheet's own clock should agree
@@ -121,9 +121,30 @@ def build(cfg, client, which: str, service_account: str, spec=None) -> dict:
     if "_meta" in created:
         client.values_update([("'_meta'!A1", meta_values(spec, cfg, service_account))])
     after = client.meta("sheets(properties(sheetId,title,hidden),protectedRanges)")
+    problems = check(spec, after, which, editors)
+    if which == "tracker":
+        problems += header_drift(spec, client, [t for t in want if t in have])
     return {"spreadsheet": client.id, "which": which, "created": created, "repaired": repaired,
             "existing": [t for t in want if t not in created], "deleted": deleted,
-            "editors": editors, "problems": check(spec, after, which, editors)}
+            "editors": editors, "problems": problems}
+
+
+def header_drift(spec, client, titles: list[str]) -> list[str]:
+    """Existing tracker tabs whose header row is not the spec's columns, in order. The bridge
+    writes by column position, so such a tab would get values in the wrong columns."""
+    tabs = [t for t in spec["tracker"]["tabs"] if t["name"] in titles]
+    if not tabs:
+        return []
+    got = client.values_get([gsheets.a1(t["name"], f"{t['header_row']}:{t['header_row']}") for t in tabs])
+    probs = []
+    for t, rows in zip(tabs, got):
+        want = [c["name"] for c in t["columns"]]
+        have = (rows[0] if rows else [])[:len(want)]
+        if have != want:
+            probs.append(f"tracker/{t['name']}: header row differs from the spec (columns added or reordered). "
+                         f"With the controller stopped, delete the tab and rerun init --sheets; the controller "
+                         f"writes its rows again, but reviewer sign-ups typed into it are lost")
+    return probs
 
 
 def _repair_template(spec, client, meta, editors):

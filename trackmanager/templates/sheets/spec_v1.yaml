@@ -96,18 +96,19 @@ tracker:
       key: Track Name
       color_by: Stage
       columns:
+        # Order (2026-11-24): what a reviewer scans for, then the sign-up cells, then track details.
         - {name: Date,           source: archive.date,     width: 90}
         - {name: Track Name,     source: archive.sdm,      width: 330}
-        - {name: EBID,           source: archive.ebid,     width: 90}
-        - {name: Target,         source: archive.target,   width: 90}
-        - {name: Configuration,  source: archive.config,   width: 70}
         - {name: Stage,          source: state.stage,      width: 140}
-        - {name: Iteration,      source: state.iteration,  width: 70}
         - {name: QA Reviewer,    source: reviewer,         width: 140,
            note: "Type your name to sign up for this track."}
         - {name: Email,          source: reviewer,         width: 200,
            validation: {type: TEXT_IS_EMAIL, strict: false,
                         help: "The address that gets the 'QA ready' email."}}
+        - {name: Target,         source: archive.target,   width: 90}
+        - {name: Configuration,  source: archive.config,   width: 70}
+        - {name: EBID,           source: archive.ebid,     width: 90}
+        - {name: Iteration,      source: state.iteration,  width: 70}
         - {name: QA Server Links, source: links.qa,        width: 90, link_text: QA,
            header_link: "${qa.home_url}", note: "Click this header for the QA home page (all tracks)."}
         - {name: QA history,     source: links.qa_track,   width: 90, link_text: all iterations}

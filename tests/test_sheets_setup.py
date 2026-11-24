@@ -265,3 +265,14 @@ def test_init_repairs_a_template_that_was_typed_into_and_unlocked(cfg):
     assert (f.get_value("TEMPLATE", "D7"), f.get_value("TEMPLATE", "E7")) == (True, "TEST")   # default row kept
     assert f.get_value("TEMPLATE", "R7").startswith("=IF(")         # formulas kept
     assert sheets_setup.build(cfg, f, "flagbook", SA)["repaired"] == []   # nothing left to repair
+
+
+def test_build_reports_a_tracker_tab_with_an_old_column_order(cfg):
+    """2026-11-24: the QA Sign-up columns were reordered. A tab built with the old order would get
+    the bridge's values in the wrong columns, so init reports it (nothing is rebuilt in place)."""
+    f = FakeSheets()
+    sheets_setup.build(cfg, f, "tracker", SA)
+    assert sheets_setup.build(cfg, f, "tracker", SA)["problems"] == []
+    f.values_update([("'QA Sign-up'!A1:C1", [["Date", "Track Name", "EBID"]])])
+    probs = sheets_setup.build(cfg, f, "tracker", SA)["problems"]
+    assert len(probs) == 1 and probs[0].startswith("tracker/QA Sign-up: header row differs")
