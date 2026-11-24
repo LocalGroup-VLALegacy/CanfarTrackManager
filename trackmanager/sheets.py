@@ -18,6 +18,7 @@ from pathlib import Path
 import yaml
 
 SPEC = Path(__file__).resolve().parent / "templates" / "sheets" / "spec_v1.yaml"
+TRACKER_ROWS = 5000        # grid rows of a tracker tab; validation and reviewer ranges reach this row
 
 
 # ---- spec loading --------------------------------------------------------------------------
@@ -230,9 +231,20 @@ def _width(sheet_id, idx: int, px: int) -> dict:
         "properties": {"pixelSize": px}, "fields": "pixelSize"}}
 
 
-def _stage_rules(spec, sheet_id, stage_letter: str, ncols: int, first_row: int) -> list[dict]:
+def _stage_rules(spec, sheet_id, stage_letter: str, ncols: int, first_row: int,
+                 detail_letter: str | None = None) -> list[dict]:
+    """Row colours by Stage. With a Detail column, a first rule (it wins over the row colours)
+    paints the Stage cell in hold_color when Detail starts with "HOLD:"."""
     reqs = []
-    for i, (stage, color) in enumerate(spec["stage_colors"].items()):
+    if detail_letter and spec.get("hold_color"):
+        sc = col_index(stage_letter)
+        reqs.append({"addConditionalFormatRule": {"index": 0, "rule": {
+            "ranges": [{"sheetId": sheet_id, "startRowIndex": first_row - 1,
+                        "startColumnIndex": sc, "endColumnIndex": sc + 1}],
+            "booleanRule": {"condition": {"type": "CUSTOM_FORMULA",
+                                          "values": [{"userEnteredValue": f'=LEFT(${detail_letter}{first_row}, 5)="HOLD:"'}]},
+                            "format": {"backgroundColor": _rgb(spec["hold_color"])}}}}})
+    for i, (stage, color) in enumerate(spec["stage_colors"].items(), start=len(reqs)):
         reqs.append({"addConditionalFormatRule": {"index": i, "rule": {
             "ranges": [{"sheetId": sheet_id, "startRowIndex": first_row - 1,
                         "startColumnIndex": 0, "endColumnIndex": ncols}],
@@ -249,22 +261,27 @@ def tracker_tab_requests(spec: dict, tab_name: str, sheet_id: int, editors: list
     lmap = letters(cols)
     reqs = [{"updateSheetProperties": {"properties": {
         "sheetId": sheet_id, "title": tab_name,
-        "gridProperties": {"frozenRowCount": t.get("frozen_rows", 1), "frozenColumnCount": t.get("frozen_cols", 0)}},
-        "fields": "title,gridProperties(frozenRowCount,frozenColumnCount)"}},
+        "gridProperties": {"rowCount": TRACKER_ROWS, "columnCount": max(26, len(cols)),
+                           "frozenRowCount": t.get("frozen_rows", 1), "frozenColumnCount": t.get("frozen_cols", 0)}},
+        "fields": "title,gridProperties(rowCount,columnCount,frozenRowCount,frozenColumnCount)"}},
         _header_cells(sheet_id, hr - 1, [c["name"] for c in cols],
                       links={c["name"]: c["header_link"] for c in cols if c.get("header_link")})]
     for i, c in enumerate(cols):
         if c.get("width"):
             reqs.append(_width(sheet_id, i, c["width"]))
+        if c.get("hidden"):
+            reqs.append({"updateDimensionProperties": {"range": {"sheetId": sheet_id, "dimension": "COLUMNS",
+                                                                 "startIndex": i, "endIndex": i + 1},
+                                                       "properties": {"hiddenByUser": True}, "fields": "hiddenByUser"}})
         if c.get("validation"):
             L = lmap[c["name"]]
-            reqs.append(_validation(sheet_id, f"{L}{hr + 1}:{L}5000", c["validation"]))
+            reqs.append(_validation(sheet_id, f"{L}{hr + 1}:{L}{TRACKER_ROWS}", c["validation"]))
         if c.get("note"):
             reqs.append({"updateCells": {"start": {"sheetId": sheet_id, "rowIndex": hr - 1, "columnIndex": i},
                                          "rows": [{"values": [{"note": c["note"]}]}], "fields": "note"}})
     if t.get("color_by"):
-        reqs += _stage_rules(spec, sheet_id, lmap[t["color_by"]], len(cols), hr + 1)
-    editable = [f"{lmap[n]}{hr + 1}:{lmap[n]}5000" for n in t["protection"]["editable_columns"]]
+        reqs += _stage_rules(spec, sheet_id, lmap[t["color_by"]], len(cols), hr + 1, lmap.get("Detail"))
+    editable = [f"{lmap[n]}{hr + 1}:{lmap[n]}{TRACKER_ROWS}" for n in t["protection"]["editable_columns"]]
     reqs.append(_protect(sheet_id, tab_name, editable, editors))
     return reqs
 
@@ -275,7 +292,8 @@ def flag_template_requests(spec: dict, sheet_id: int, editors: list[str]) -> lis
     cols = tb["columns"]
     reqs = [{"updateSheetProperties": {"properties": {
         "sheetId": sheet_id, "title": fb["template_tab"],
-        "gridProperties": {"frozenRowCount": tb["header_row"], "rowCount": tb["last_row"] + 10, "columnCount": 26}},
+        "gridProperties": {"frozenRowCount": tb["header_row"], "columnCount": 26,
+                           "rowCount": max(tb["last_row"], int(re.search(r"(\d+)$", tb["hidden_range"]).group(1))) + 10}},
         "fields": "title,gridProperties(frozenRowCount,rowCount,columnCount)"}}]
     cells = {}
     for h in fb["header_cells"]:

@@ -37,7 +37,7 @@ stage_colors:          # background per Stage (the 10 stages of trackmanager/sta
   AWAITING_DECISION: "#ea9999"
   NEEDS_MANUAL:      "#b4a7d6"
   SKIPPED:           "#999999"
-hold_color: "#ffd966"   # Stage cell when the operator HOLD flag is set (Detail says why)
+hold_color: "#ffd966"   # Stage cell when the track is on HOLD: the bridge writes Detail as "HOLD: <why>"
 
 tracker:
   title: "${project.name} Tracks"
@@ -47,7 +47,8 @@ tracker:
       header_row: 1
       frozen_rows: 1
       frozen_cols: 3
-      key: EBID                      # rows are found by this column; appended, never re-sorted or deleted
+      key: Trackname                 # rows are found by the SDM name (some archive EBs have no EB id);
+                                     # appended, never re-sorted or deleted
       color_by: Stage                # whole row coloured from stage_colors
       columns:
         - {name: EBID,              source: archive.ebid,           width: 90}
@@ -92,7 +93,7 @@ tracker:
       header_row: 1
       frozen_rows: 1
       frozen_cols: 2
-      key: EBID
+      key: Track Name
       color_by: Stage
       columns:
         - {name: Date,           source: archive.date,     width: 90}
@@ -116,7 +117,7 @@ tracker:
           source: formula
           width: 250
           formula: >-
-            =IF(AND({{EBID}}<>"", {{Stage}}="AWAITING_REVIEW"),
+            =IF(AND({{Track Name}}<>"", {{Stage}}="AWAITING_REVIEW"),
             "[${review.email_prefix}] QA ready for "&{{Track Name}}&" (iteration "&{{Iteration}}&")", "")
         - name: Email Body
           source: formula
@@ -125,12 +126,16 @@ tracker:
             =IF({{Email Subject}}="", "",
             "Hi "&{{QA Reviewer}}&" -- iteration "&{{Iteration}}&" of "&{{Track Name}}&
             " ("&{{Target}}&", "&{{Configuration}}&" configuration) is ready for QA review."&CHAR(10)&
-            "QA products: "&{{QA Server Links}}&CHAR(10)&
-            "Earlier iterations: "&{{QA history}}&CHAR(10)&
-            "Flags, verdict and refant: "&{{Flags tab}}&CHAR(10)&
+            "QA products: "&{{QA URL}}&CHAR(10)&
+            "Earlier iterations: "&{{History URL}}&CHAR(10)&
+            "Flags, verdict and refant: "&{{Flags URL}}&CHAR(10)&
             "QA guide: ${sheets.links.qa_guide}")
         - {name: Notified iter,  source: script,           width: 80,
            note: "Last iteration emailed (written by the notification script)."}
+        # Plain URLs for the email body: joining a HYPERLINK cell gives its label, not its address.
+        - {name: QA URL,         source: links.qa,         hidden: true}
+        - {name: History URL,    source: links.qa_track,   hidden: true}
+        - {name: Flags URL,      source: links.flag_tab,   hidden: true}
       protection: {mode: whole_tab, editable_columns: [QA Reviewer, Email, Notes]}
 
 flagbook:

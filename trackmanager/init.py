@@ -1,11 +1,17 @@
 """Project setup report (plan §3.7): validate the config, sync the archive, preflight every EB.
 
-    python -m trackmanager.init --project project.yaml [--root DIR] [--no-path-check] [--json]
+    python -m trackmanager.init --project project.yaml [--root DIR] [--no-path-check] [--json] [--sheets]
 
 Rerunnable. It creates <root>, runs the archive sync (tracks/<EB>/archive.json; it creates no
 state files, the controller starts tracks), runs preflight on every kept EB, and writes
 <root>/reports/init-<timestamp>.{txt,json}. The operator fixes the project cfgs and reruns until
-the exit code is 0 (no EB with a failed preflight). Sheets are created later (M4).
+the exit code is 0 (no EB with a failed preflight).
+
+--sheets also builds the tab structure of the two spreadsheets named in project.yaml `sheets`
+(trackmanager/sheets_setup.py; operator steps in docs/sheets_setup.md): tabs, headers, formulas,
+validation and protection, but no rows. Rows and per-EB flag tabs are written by the controller,
+so this refuses while a controller holds the lease. A project without archive discovery runs only
+the sheets step.
 """
 from __future__ import annotations
 
@@ -18,7 +24,7 @@ from collections import Counter, defaultdict
 from . import archive, cfgs, preflight
 from . import config as projconfig
 from .disk import PRODUCTS_FACTOR, SPLIT_FACTOR   # the quota model the disk gate uses (plan §3.2)
-from .store import Root, iso, now, write_json
+from .store import Root, age_s, iso, now, read_json, write_json
 
 ITERATIONS = 3             # assumed iterations per track for the products estimate
 
@@ -95,21 +101,69 @@ def text(rep: dict) -> str:
     return "\n".join(out)
 
 
+def sheets_step(cfg, root: Root, make_client=None) -> tuple[list[str], int]:
+    """Build/check both spreadsheets. Returns (report lines, exit code). make_client(id) -> client
+    (tests pass FakeSheets; default gsheets.SheetsClient with the project's key)."""
+    from . import gsheets, sheets_setup
+    if not cfg.sheets.enabled:
+        return ["sheets: sheets.enabled is false in project.yaml; nothing to build"], 2
+    lease = read_json(root.lease)
+    if lease and not lease.get("released") and (age_s(lease.get("heartbeat")) or 1e9) < 3 * cfg.controller.poll_s:
+        return [f"sheets: controller {lease['holder']} holds the lease; stop it first "
+                "(the controller is the only writer of sheet rows)"], 2
+    try:
+        sa = gsheets.service_account_email(cfg.sheets_key)
+    except gsheets.KeyFileError as e:
+        return [f"sheets: {e}"], 2
+    out, code, reports = [f"sheets: service account {sa}"], 0, []
+    for which, sid in (("tracker", cfg.sheets.tracker_id), ("flagbook", cfg.sheets.flagbook_id)):
+        client = make_client(sid) if make_client else gsheets.SheetsClient(sid, credentials=cfg.sheets_key)
+        try:
+            rep = sheets_setup.build(cfg, client, which, sa)
+        except gsheets.SheetsError as e:
+            hint = (" (is the spreadsheet shared with the service account as Editor?)"
+                    if e.status in (403, 404) else "")
+            out.append(f"  {which} {sid}: FAILED: {e}{hint}")
+            code = 2
+            continue
+        reports.append(rep)
+        out.append(f"  {which} {sid}: created {rep['created'] or 'nothing'}; existing {rep['existing'] or 'none'}"
+                   + (f"; deleted {rep['deleted']}" if rep["deleted"] else ""))
+        out += [f"    PROBLEM: {p}" for p in rep["problems"]]
+        code = code or (1 if rep["problems"] else 0)
+    if reports:
+        out.append("  protected-range editors: " + ", ".join(reports[0]["editors"]))
+        out.append("  share by hand: reviewers as Editor on both spreadsheets (they can edit only the "
+                   "sign-up cells and the flag rows/verdict cells); keep the service account as Editor")
+    stamp = now().strftime("%Y%m%dT%H%M%SZ")
+    (root.path / "reports").mkdir(parents=True, exist_ok=True)
+    write_json(root.path / "reports" / f"sheets-{stamp}.json", {"generated": iso(), "service_account": sa,
+                                                               "spreadsheets": reports})
+    return out, code
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--project", required=True)
     p.add_argument("--root", help="override project.root")
     p.add_argument("--no-path-check", action="store_true", help="skip the CASA / cfg path checks of the config")
     p.add_argument("--json", action="store_true", help="print the report as JSON instead of text")
+    p.add_argument("--sheets", action="store_true", help="also build/check the tracker and flag-book tabs")
     a = p.parse_args(argv)
     try:
         cfg = projconfig.load(a.project, root=a.root, check_paths=not a.no_path_check)
     except projconfig.ConfigError as e:
         sys.exit(str(e))
-    if not archive.enabled(cfg):
+    if not archive.enabled(cfg) and not a.sheets:
         sys.exit("nothing to sync: set project.vla_project_codes and inputs.eb_list (archive or file:)")
     cfg.root.mkdir(parents=True, exist_ok=True)
     root = Root(cfg.root)
+    sheet_code = 0
+    if a.sheets:
+        lines, sheet_code = sheets_step(cfg, root)
+        print("\n".join(lines))
+        if not archive.enabled(cfg):
+            return sheet_code
     try:
         tables = cfgs.load(cfg)
     except cfgs.CfgError as e:
@@ -131,7 +185,7 @@ def main(argv=None) -> int:
     write_json(reports / f"init-{stamp}.json", rep)
     (reports / f"init-{stamp}.txt").write_text(text(rep) + "\n")
     print(json.dumps(rep, indent=1) if a.json else text(rep))
-    return 0 if rep["clean"] else 1
+    return sheet_code or (0 if rep["clean"] else 1)
 
 
 if __name__ == "__main__":
