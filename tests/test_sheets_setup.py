@@ -197,7 +197,9 @@ def test_check_reports_protection_drift(cfg):
     assert any("README: expected one whole-tab protection, found 0" in p for p in probs)
     assert any("extra editors ['intruder@example.org']" in p for p in probs)
     assert any("TEMPLATE: unprotected ranges differ" in p for p in probs)
-    assert any("TEMPLATE: should be hidden" in p for p in probs)
+    assert not any("TEMPLATE: should be hidden" in p for p in probs)   # operators unhide it to edit it
+    f.sheet("_meta")["properties"]["hidden"] = False
+    assert any("_meta: should be hidden" in p for p in sheets_setup.check(spec, f.meta(), "flagbook", rep["editors"]))
     f.batch_update([{"deleteSheet": {"sheetId": f.sheet("_meta")["properties"]["sheetId"]}}])
     assert any("tab '_meta' is missing" in p for p in sheets_setup.check(spec, f.meta(), "flagbook", rep["editors"]))
 
@@ -243,7 +245,8 @@ def test_init_sheets_step(tmp_path, cfg):
 
 def test_init_repairs_a_template_that_was_typed_into_and_unlocked(cfg):
     """2026-11-24, live: a reviewer typed a flag row and RESTART into TEMPLATE (then visible, with
-    reviewer-editable cells). Rerunning the build hides it, locks it and clears the input."""
+    reviewer-editable cells). Rerunning the build hides it, locks it to operators and clears the
+    verdict; flag rows are the project's defaults and stay."""
     f = FakeSheets()
     sheets_setup.build(cfg, f, "flagbook", SA)
     sh = f.sheet("TEMPLATE")
@@ -253,9 +256,9 @@ def test_init_repairs_a_template_that_was_typed_into_and_unlocked(cfg):
         f.set_value("TEMPLATE", a1, v)
     rep = sheets_setup.build(cfg, f, "flagbook", SA)
     assert rep["problems"] == [] and len(rep["repaired"]) == 3, rep
-    assert "M1" in rep["repaired"][2] and "E7" in rep["repaired"][2]
+    assert rep["repaired"][2].startswith("cleared M1 ") and "E7" not in rep["repaired"][2]
     assert f.sheet("TEMPLATE")["properties"]["hidden"] is True
-    assert f.get_value("TEMPLATE", "M1") is None and f.get_value("TEMPLATE", "E7") is None
-    assert f.get_value("TEMPLATE", "D7") is False                   # checkbox back to unticked
+    assert f.get_value("TEMPLATE", "M1") is None
+    assert (f.get_value("TEMPLATE", "D7"), f.get_value("TEMPLATE", "E7")) == (True, "TEST")   # default row kept
     assert f.get_value("TEMPLATE", "R7").startswith("=IF(")         # formulas kept
     assert sheets_setup.build(cfg, f, "flagbook", SA)["repaired"] == []   # nothing left to repair

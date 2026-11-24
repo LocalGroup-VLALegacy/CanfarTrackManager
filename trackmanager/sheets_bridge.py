@@ -89,7 +89,7 @@ class Bridge:
         else:
             self.mirror_reset = False
         st.update(tracker_id=self.cfg.sheets.tracker_id, flagbook_id=self.cfg.sheets.flagbook_id)
-        for key in ("rows", "tabs", "signups", "acks", "checks", "pending"):
+        for key in ("rows", "tabs", "signups", "acks", "checks", "pending", "stamps"):
             st.setdefault(key, {})
         for t in self.spec["tracker"]["tabs"]:
             st["rows"].setdefault(t["name"], {})
@@ -308,6 +308,55 @@ class Bridge:
         self.state["pending"][eb] = {"file": name, "m1": raw, "verdict": word, "iteration": n, "rows": applied}
         log(f"sheets: {word} for {eb} iteration {n} from {d['by']} -> inbox/{name}")
 
+    # ---- iteration 1 ----------------------------------------------------------------------------
+    def first_run_inputs(self, st) -> str | None:
+        """Called by calibrate.submit before iteration 1's first attempt: freeze the ticked rows of the
+        track's tab (the project TEMPLATE's defaults plus anything added since) and its avoid-refant
+        cell into iter_1/inputs/. Returns None once frozen, or why the submission waits: the tab is
+        created at the end of the cycle the track is queued in, and read at the start of the next.
+        Ticked rows that fail the checks for this track are left out (shown in Check), not blocking:
+        a project-wide default may simply not apply to every track."""
+        eb = st["eb"]
+        tab = self.state["tabs"].get(eb)
+        if not tab or tab.get("dropped_at"):
+            return "waiting one cycle for its flag tab (iteration 1 uses its ticked rows)"
+        grid = (self.read or {}).get("tabs", {}).get(eb)
+        if grid is None:
+            return ("waiting for the flag book: the sheets could not be read this cycle" if self.read is None
+                    else "waiting one cycle to read its new flag tab")
+        arch = archive_ctx(self.r, st, self.ctl.spec(st))
+        rows = self._table_rows(grid)
+        first = self.tb["first_row"]
+        cmds, probs = flagcmds.build_commands(rows, arch, first_row=first)
+        bad = {r for r, _ in probs}
+        used = [first + i for i, row in enumerate(rows) if flagcmds._truthy(row.get("Apply Row")) and first + i not in bad]
+        refant, note = re.sub(r"\s+", "", _cell(grid, 1, "O")), ""
+        if refant and not REFANT_RE.match(refant):
+            note, refant = f"; avoid-refant {refant!r} ignored (use ea26 or ea26,ea10)", ""
+        elif refant and arch.get("antennas") and (gone := sorted(set(refant.split(",")) - set(arch["antennas"]))):
+            note, refant = f"; avoid-refant ignored: {gone} not in this track", ""
+        files = {"manual_flagging.txt": flagcmds.flag_file(arch["sdm"], arch["config"], cmds)}
+        if refant:
+            files["refant_ignore.txt"] = refant + "\n"
+        d = self.r.inputs(eb, 1)
+        d.mkdir(parents=True, exist_ok=True)
+        for name, text in files.items():
+            tmp = d / f"partial-{name}"
+            tmp.write_text(text)
+            os.replace(tmp, d / name)
+        checks = {}
+        for r, msg in probs:
+            checks.setdefault(str(r), []).append(f"not used in iteration 1: {msg}")
+        self.state["checks"][eb] = {r: "; ".join(m) for r, m in checks.items()}
+        self.state["stamps"][eb] = {str(r): 1 for r in used}
+        self.state["acks"][eb] = (f"iteration 1 started {now_sheet()} UTC with {len(cmds)} ticked flag row(s)"
+                                  + (f"; {len(bad)} ticked row(s) left out, see the Check column" if bad else "")
+                                  + (f"; avoiding {refant} as refant" if refant else "") + note)
+        self.ctl.event(eb, st["stage"], st["stage"], self.state["acks"][eb].replace(f" {now_sheet()} UTC", "")
+                       + " (frozen in iter_1/inputs/)")
+        self._save()
+        return None
+
     # ---- publish --------------------------------------------------------------------------------
     def publish(self, states: dict):
         self.cycles += 1
@@ -329,6 +378,11 @@ class Bridge:
 
     def _acknowledge(self):
         stamps = []
+        for eb, rows in list(self.state["stamps"].items()):   # rows iteration 1 used: "Added in iter" 1
+            tab, grid = self.state["tabs"].get(eb), (self.read or {}).get("tabs", {}).get(eb)
+            if tab and not tab.get("dropped_at") and grid is not None:
+                stamps += [(_a1(tab["title"], "S", int(r)), [[n]]) for r, n in rows.items() if not _cell(grid, int(r), "S")]
+            self.state["stamps"].pop(eb)
         for eb, p in list(self.state["pending"].items()):
             done = read_json(self.r.inbox_archive / p["file"])
             if done is None:
@@ -529,12 +583,12 @@ class Bridge:
                 continue
             probs += sheets_setup.check_tab(by_gid[t["gid"]], f"flagbook/{t['title']}",
                                             self.fb["protection"]["editable_ranges"], self.editors)
-        tmpl = self.fb["template_tab"]       # input typed into TEMPLATE is never read: say so
-        typed = sheets.reviewer_input(self.spec, self.flagbook.values_get(
+        tmpl = self.fb["template_tab"]       # a verdict typed into TEMPLATE is never read or copied: say so
+        typed = sheets.template_input(self.spec, self.flagbook.values_get(
             [f"{gsheets.a1(tmpl)}!A1:T{self.tb['last_row']}"])[0])
         if typed:
-            probs.append(f"flagbook/{tmpl}: has reviewer input in {', '.join(typed[:6])}"
-                         f"{' ...' if len(typed) > 6 else ''}; it is never read (use the track's own tab). "
+            probs.append(f"flagbook/{tmpl}: has input in {', '.join(typed[:6])}{' ...' if len(typed) > 6 else ''}"
+                         " (verdict, avoid-refant or bridge cells); it is never read or copied to a track's tab. "
                          "Run init --sheets with the controller stopped to clear it")
         if probs != self.drift:
             for p in sorted(set(probs) - set(self.drift)):
@@ -567,7 +621,7 @@ class Bridge:
                 out.append({"eb": eb, "item": "reviewer_hold",
                             "detail": f"{st['hold_reason'].replace('_', ' ')} from {su.get('reviewer') or 'the reviewer'}"})
             if self.state["checks"].get(eb):
-                out.append({"eb": eb, "item": "verdict_has_problems", "detail": self.state["acks"].get(eb, "")})
+                out.append({"eb": eb, "item": "flag_rows_have_problems", "detail": self.state["acks"].get(eb, "")})
         return out
 
     def _write_status(self, states):

@@ -141,15 +141,20 @@ tracker:
 flagbook:
   title: "${project.name} Flags"
   tab_name: "{config}_{project}_{mjd}_{ebid}"      # e.g. D_20A-346_59786_42455346
-  template_tab: TEMPLATE                            # built from this spec, then duplicated per EB. Hidden and
-                                                    # fully locked (2026-11-24: a reviewer typed a verdict into
-                                                    # it, and copies would have carried it to every new track);
-                                                    # each copy gets the reviewer protection below, and its
-                                                    # reviewer cells are cleared when it is made
+  template_tab: TEMPLATE                            # the project's flag template: built from this spec, then
+                                                    # copied for each track when it first calibrates. Operators
+                                                    # put the project's likely flags in it (rows 7+); a copy keeps
+                                                    # them, and its TICKED rows apply from the first run. Hidden and
+                                                    # locked to operators (sheets.editors): reviewers never see it
+                                                    # (2026-11-24: a verdict typed into a visible TEMPLATE would have
+                                                    # been copied to every new track). Operators edit it through
+                                                    # View > Hidden sheets.
   extra_tabs:
     - name: README
       text: |
         One tab per track. Add one row per issue, tick "Apply Row", then set the verdict in M1.
+        A new tab starts with the project's default flag rows; the ticked ones were used from the
+        first run (their "Added in iter" is 1). Untick a row to drop it from the next run.
         RESTART runs the pipeline again with EVERY ticked row (rows from earlier iterations included;
         untick a row to drop that flag); COMPLETE accepts the track. MANUAL REVIEW and HELP REQUESTED
         hold the track for the operator, with no rerun, until you set RESTART or COMPLETE.
@@ -227,4 +232,5 @@ flagbook:
   protection:
     mode: whole_tab
     editable_ranges: ["D7:O150", "M1", "O1"]       # reviewers, on each track's tab: the table and the two decision cells
-    bridge_ranges: ["S7:T150"]                     # Added in iter, Check: written by the bridge, cleared on a new copy
+    copy_clear_ranges: ["M1", "O1", "S7:T150"]     # never carried from TEMPLATE into a track's tab: verdict,
+                                                    # avoid-refant, Added in iter, Check

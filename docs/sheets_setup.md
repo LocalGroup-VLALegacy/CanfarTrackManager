@@ -56,6 +56,13 @@ The owner of a spreadsheet can always edit its protected ranges, as can the edit
    - The quota is 100 emails a day for a consumer account and 1,500 for Workspace.
 10. Share both spreadsheets with the reviewers as **Editor**.
 
+## The project's flag template
+`TEMPLATE` in the flag book holds the flags most tracks of the project are likely to need, such as known RFI in a given SPW. Ticked rows are applied from each track's first run; unticked rows are suggestions a reviewer can tick.
+- **It is hidden and locked to the operators** (`sheets.editors`), so reviewers never see it. To edit it, unhide it (View → Hidden sheets), edit rows 7 onwards, then hide it again.
+- **Changes apply only to tracks whose tab is made afterwards.** Existing tabs keep the rows they were copied with.
+- **Don't set a verdict (M1) or avoid-refant (O1) in `TEMPLATE`.** They are never copied, and the protection check raises an alarm if they hold anything. `init --sheets` clears them.
+- **SPW numbers only mean something within one correlator setup.** A single template suits a project with one setup; templates per setup or per array configuration can be added later.
+
 ## Checks
 - Headless reachability (probe P2):
   ```
@@ -68,7 +75,12 @@ The owner of a spreadsheet can always edit its protected ranges, as can the edit
 ## What the controller does with the sheets
 With `sheets.enabled`, each controller cycle runs the Sheets bridge (`trackmanager/sheets_bridge.py`):
 - **Rows.** Every track has one row in each tracker tab; rows are appended and never moved. Only changed cells are written, as one write per spreadsheet per cycle.
-- **Flag tabs.** A track's tab is copied from `TEMPLATE` when it first starts calibrating, so reviewers can add rows while it runs. At DONE (or SKIPPED / NEEDS_MANUAL) the tab is saved to `tracks/<EB>/flag_tab.csv` and hidden; `sheets.drop_done_tabs_after_d` days later it is deleted.
+- **Flag tabs.** A track's tab is copied from the project's `TEMPLATE` when it is first queued for calibration, so reviewers can add rows while it runs.
+  - The copy keeps the template's flag rows. Its verdict, avoid-refant, `Added in iter` and `Check` cells always start empty.
+  - At DONE (or SKIPPED / NEEDS_MANUAL) the tab is saved to `tracks/<EB>/flag_tab.csv` and hidden. Finished tabs are still in the spreadsheet: open the ≡ (All sheets) menu or View → Hidden sheets. They are deleted `sheets.drop_done_tabs_after_d` days later.
+- **Iteration 1 uses the tab's ticked rows.** Before the first run is submitted, the ticked rows of the track's tab, and its avoid-refant cell, are frozen into `iter_1/inputs/`. The submission waits one cycle for the tab to be created and read.
+  - A ticked row that fails the checks for that track is left out, rather than blocking the run (a project-wide default may not apply to every track). It is explained in the row's `Check` cell and in M2.
+  - Rows that were used get `Added in iter` = 1.
 - **Sign-ups.** The first time a name appears in `QA Reviewer` the bridge stamps `Signed up (UTC)` in Track Summary. A sign-up without a valid email shows as a "needs you" item.
 - **Verdicts (M1).** Read only while the track is `AWAITING_REVIEW`; a verdict set earlier is cleared, with a note in M2.
   - **RESTART** reruns the pipeline with every ticked row, including rows from earlier iterations, plus the avoid-refant list in O1. Every row is checked first; problems go to the row's `Check` cell and M2, and the verdict stays in M1 until the rows are fixed.

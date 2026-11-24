@@ -346,7 +346,9 @@ class Controller:
                 plan.waiting[st["eb"]] = {"position": len(plan.waiting) + 1,
                                           "blocked_by": f"no handler for {st['stage']} in this build"}
                 continue
-            submit(self, st)
+            wait = submit(self, st)
+            if isinstance(wait, str):  # e.g. iteration 1 waiting one cycle for its flag tab
+                plan.waiting[st["eb"]] = {"position": len(plan.waiting) + 1, "blocked_by": wait}
         for st in tracks:
             w = plan.waiting.get(st["eb"])
             want = (w["position"], w["blocked_by"]) if w else (None, None)

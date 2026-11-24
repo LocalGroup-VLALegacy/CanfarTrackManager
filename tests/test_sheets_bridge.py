@@ -122,7 +122,7 @@ def test_review_loop_through_the_sheets(tmp_path):
     assert sh.cell(title, "M1") == "RESTART"
     assert "no decimals" in sh.cell(title, "T7") and "RESTART not applied yet" in sh.cell(title, "M2")
     summ = read_json(root / "state" / "summary.json")
-    assert {i["item"] for i in summ["sheets"]["needs_you"]} >= {"verdict_has_problems"}
+    assert {i["item"] for i in summ["sheets"]["needs_you"]} >= {"flag_rows_have_problems"}
     assert sh.tracker("Track Summary", 2, "Reviewer") == "Reviewer A"
     assert sh.tracker("Track Summary", 2, "Signed up (UTC)")
 
@@ -313,19 +313,43 @@ def test_formula_like_text_is_written_as_text(tmp_path, monkeypatch):
     assert t.get_value("Track Summary", f"{lm['Detail']}2") == "'=IMPORTXML(\"http://evil\")"
 
 
-def test_input_typed_into_template_is_not_copied_and_raises_the_alarm(tmp_path, monkeypatch):
+def test_template_rows_are_copied_but_its_verdict_is_not(tmp_path, monkeypatch):
     monkeypatch.setenv("TM_FAKE_SHEETS_DIR", str(tmp_path))
     b, ctl, states, t, f = bridge_for(tmp_path, {"x": "STAGING"})
     for a1, v in (("M1", "RESTART"), ("D7", True), ("E7", "TEST"), ("S7", 2)):
         f.set_value("TEMPLATE", a1, v)
     b.publish(states)
-    assert "TEMPLATE: has reviewer input in D7, E7, M1" in b.alarm()
+    assert "TEMPLATE: has input in M1, S7 " in b.alarm()           # rows are fine; the verdict is not
     states["x"]["stage"] = "CALIBRATING"
     b.publish(states)
     title = b.state["tabs"]["x"]["title"]
-    assert [f.get_value(title, a) for a in ("M1", "D7", "E7", "S7")] == [None, False, None, None]
+    assert [f.get_value(title, a) for a in ("M1", "D7", "E7", "S7")] == [None, True, "TEST", None]
     assert f.get_value(title, "R7").startswith("=IF(") and f.sheet(title)["properties"].get("hidden") is not True
     prot, = f.sheet(title)["protectedRanges"]                       # the copied full lock was replaced
     assert len(prot["unprotectedRanges"]) == 3
     b.ingest()
-    assert not b.state["pending"] and "x" not in b.state["acks"]    # nothing to act on in the clean copy
+    assert not b.state["pending"] and "x" not in b.state["acks"]    # no verdict in the copy
+
+
+def test_iteration_1_runs_with_the_ticked_rows_of_its_tab(tmp_path):
+    """The project TEMPLATE's default rows are copied into each new track tab; iteration 1 waits a
+    cycle for the tab, then freezes its ticked rows (a row that fails the checks is left out)."""
+    cfg, root, fake = setup(tmp_path, [{"eb": "t1", "mode": "ok", "sleep_s": 1, "config": "B"}])
+    sh = Sheet(fake, cfg)
+    sh.flag_row("TEMPLATE", 7, Apply_Row=True, Issue_Description="known RFI", SPW="7", Name_of_QA_person="ops")
+    sh.flag_row("TEMPLATE", 8, Apply_Row=False, Issue_Description="sometimes", Scan="2", Name_of_QA_person="ops")
+    sh.flag_row("TEMPLATE", 9, Apply_Row=True, Issue_Description="bad default", Name_of_QA_person="ops",
+                **{"Start_Date/Time": "yesterday"})
+    sh.put("TEMPLATE", "O1", "ea05")                       # never copied
+    until(cfg, root, fake, "t1", lambda s: s["stage"] == "AWAITING_REVIEW")
+    flags = (root / "tracks" / "t1" / "iter_1" / "inputs" / "manual_flagging.txt").read_text().splitlines()
+    assert flags[2:] == ["mode='manual' spw='7' reason='[MANUAL] Issue: known RFI. Flagged by ops'"]
+    assert not (root / "tracks" / "t1" / "iter_1" / "inputs" / "refant_ignore.txt").exists()
+    title = "B_t1"
+    assert (sh.cell(title, "S7"), sh.cell(title, "S8"), sh.cell(title, "S9")) == (1, None, None)
+    assert "not used in iteration 1" in sh.cell(title, "T9") and sh.cell(title, "O1") is None
+    assert sh.cell(title, "M2").startswith("iteration 1 started") and "1 ticked row(s) left out" in sh.cell(title, "M2")
+    evs = read_jsonl(root / "events.jsonl")
+    assert any("iteration 1 started with 1 ticked flag row(s)" in e["reason"] for e in evs)
+    waits = [r for r in read_jsonl(root / "jobs" / "jobs.jsonl") if r.get("eb") == "t1" and r.get("status") == "submitted"]
+    assert len(waits) == 1                                  # one submission, after the one-cycle wait

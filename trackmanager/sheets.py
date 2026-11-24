@@ -361,12 +361,12 @@ def flag_template_requests(spec: dict, sheet_id: int, editors: list[str]) -> lis
 
 
 def flag_clear_requests(spec: dict, sheet_id: int) -> list[dict]:
-    """Empty every reviewer cell (and the bridge's Added in iter / Check cells) of a flag tab;
-    the Apply Row checkboxes go back to FALSE. Formulas and header cells are untouched."""
+    """Empty the cells a track's tab must not inherit from TEMPLATE (`copy_clear_ranges`: verdict,
+    avoid-refant, Added in iter, Check). The template's flag rows are kept."""
     fb = spec["flagbook"]
     bools = {c["col"] for c in fb["table"]["columns"] if c.get("validation", {}).get("type") == "BOOLEAN"}
     reqs = []
-    for a1 in fb["protection"]["editable_ranges"] + fb["protection"].get("bridge_ranges", []):
+    for a1 in fb["protection"]["copy_clear_ranges"]:
         g = _grid(sheet_id, a1)
         row = [{"userEnteredValue": {"boolValue": False}} if col_letter(c) in bools else {}
                for c in range(g["startColumnIndex"], g["endColumnIndex"])]
@@ -378,8 +378,9 @@ def flag_clear_requests(spec: dict, sheet_id: int) -> list[dict]:
 
 
 def flag_tab_copy_requests(spec: dict, template_id: int, new_id: int, title: str, index: int) -> list[dict]:
-    """A track's flag tab: copy TEMPLATE, show it, and start from empty reviewer cells. Its protection
-    is set afterwards (flag_tab_protection_requests), once the copied one's id is known."""
+    """A track's flag tab: copy TEMPLATE (its default flag rows included), show it, and clear the
+    verdict cells. Its protection is set afterwards (flag_tab_protection_requests), once the copied
+    one's id is known."""
     return [{"duplicateSheet": {"sourceSheetId": template_id, "newSheetId": new_id, "newSheetName": title,
                                 "insertSheetIndex": index}},
             {"updateSheetProperties": {"properties": {"sheetId": new_id, "hidden": False}, "fields": "hidden"}},
@@ -392,12 +393,12 @@ def flag_tab_protection_requests(spec: dict, sheet_id: int, title: str, protecte
             _protect(sheet_id, title, spec["flagbook"]["protection"]["editable_ranges"], editors)]
 
 
-def reviewer_input(spec: dict, grid) -> list[str]:
-    """A1 cells holding input in a values_get grid of a flag tab's A1:T<last_row> (checkboxes that
-    are FALSE do not count). Used to spot a TEMPLATE that someone typed into."""
+def template_input(spec: dict, grid) -> list[str]:
+    """Cells of TEMPLATE (a values_get grid of A1:T<last_row>) that hold something a track's tab must
+    not inherit: a verdict, an avoid-refant list, Added in iter or Check. Flag rows are expected."""
     fb = spec["flagbook"]
     out = []
-    for a1 in fb["protection"]["editable_ranges"]:
+    for a1 in fb["protection"]["copy_clear_ranges"]:
         g = _grid(0, a1)
         for r in range(g["startRowIndex"], g["endRowIndex"]):
             for c in range(g["startColumnIndex"], g["endColumnIndex"]):

@@ -127,8 +127,9 @@ def build(cfg, client, which: str, service_account: str, spec=None) -> dict:
 
 
 def _repair_template(spec, client, meta, editors):
-    """An existing TEMPLATE from before it was hidden and locked, or one someone typed into:
-    the requests that make it hidden, fully locked and empty of reviewer input."""
+    """An existing TEMPLATE from before it was hidden and locked to operators, or one with a verdict,
+    avoid-refant, Added in iter or Check typed into it: the requests that hide it, lock it and
+    clear those cells. Its flag rows (the project's defaults) are kept."""
     title = spec["flagbook"]["template_tab"]
     sh = next(s for s in meta["sheets"] if s["properties"]["title"] == title)
     sid = sh["properties"]["sheetId"]
@@ -144,10 +145,11 @@ def _repair_template(spec, client, meta, editors):
         reqs.append({"updateSheetProperties": {"properties": {"sheetId": sid, "hidden": True}, "fields": "hidden"}})
         done.append("hidden")
     last = spec["flagbook"]["table"]["last_row"]
-    typed = sheets.reviewer_input(spec, client.values_get([f"'{title}'!A1:T{last}"])[0])
+    typed = sheets.template_input(spec, client.values_get([f"'{title}'!A1:T{last}"])[0])
     if typed:
         reqs += sheets.flag_clear_requests(spec, sid)
-        done.append(f"cleared reviewer input in {', '.join(typed[:8])}" + (" ..." if len(typed) > 8 else ""))
+        done.append(f"cleared {', '.join(typed[:8])}" + (" ..." if len(typed) > 8 else "")
+                    + " (never copied to a track's tab)")
     return done, reqs
 
 
@@ -189,6 +191,6 @@ def check(spec, meta: dict, which: str, editors: list[str]) -> list[str]:
             probs.append(f"{which}: tab {title!r} is missing")
             continue
         probs += check_tab(by_title[title], f"{which}/{title}", unprotected, editors)
-        if title in ("_meta", spec["flagbook"]["template_tab"]) and not by_title[title]["properties"].get("hidden"):
+        if title == "_meta" and not by_title[title]["properties"].get("hidden"):   # operators unhide TEMPLATE to edit it
             probs.append(f"{which}/{title}: should be hidden")
     return probs
