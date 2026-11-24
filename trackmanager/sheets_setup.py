@@ -125,37 +125,38 @@ def _rng_key(g: dict) -> tuple:
     return (g.get("startRowIndex", 0), g.get("endRowIndex"), g.get("startColumnIndex", 0), g.get("endColumnIndex"))
 
 
+def check_tab(sh: dict, where: str, unprotected: list[str], editors: list[str]) -> list[str]:
+    """One tab: exactly one whole-tab protection (not warning-only) whose editors are the expected
+    ones (extra editors are drift too: someone widened the lock) and whose unprotected ranges are
+    `unprotected` (A1 ranges)."""
+    probs = []
+    whole = [p for p in sh.get("protectedRanges", []) if set(p.get("range", {})) == {"sheetId"}]
+    if len(whole) != 1:
+        return [f"{where}: expected one whole-tab protection, found {len(whole)}"]
+    p = whole[0]
+    if p.get("warningOnly"):
+        probs.append(f"{where}: protection is warning-only")
+    want = {e.lower() for e in editors}
+    got = {e.lower() for e in p.get("editors", {}).get("users", [])}
+    if missing := sorted(want - got):
+        probs.append(f"{where}: protection editors missing {missing}")
+    if extra := sorted(got - want):
+        probs.append(f"{where}: protection has extra editors {extra}")
+    if p.get("editors", {}).get("groups") or p.get("editors", {}).get("domainUsersCanEdit"):
+        probs.append(f"{where}: protection is open to a group or domain")
+    sid = sh["properties"]["sheetId"]
+    if {_rng_key(sheets._grid(sid, a)) for a in unprotected} != {_rng_key(u) for u in p.get("unprotectedRanges", [])}:
+        probs.append(f"{where}: unprotected ranges differ from the spec")
+    return probs
+
+
 def check(spec, meta: dict, which: str, editors: list[str]) -> list[str]:
-    """Protection drift for the managed tabs of one spreadsheet (empty list = as specified).
-    Each managed tab must exist and carry exactly one whole-tab protection (not warning-only)
-    whose unprotected ranges are the spec's and whose editors include every expected editor.
-    Editors beyond the expected ones are reported too (someone widened the lock)."""
+    """Protection drift for the managed tabs of one spreadsheet (empty list = as specified)."""
     probs = []
     by_title = {s["properties"]["title"]: s for s in meta.get("sheets", [])}
-    want_editors = {e.lower() for e in editors}
-    for title, (sid, _, unprotected) in expected_tabs(spec, which, editors).items():
-        sh = by_title.get(title)
-        if sh is None:
+    for title, (_, _, unprotected) in expected_tabs(spec, which, editors).items():
+        if title not in by_title:
             probs.append(f"{which}: tab {title!r} is missing")
-            continue
-        real_sid = sh["properties"]["sheetId"]
-        whole = [p for p in sh.get("protectedRanges", [])
-                 if set(p.get("range", {})) == {"sheetId"}]
-        if len(whole) != 1:
-            probs.append(f"{which}/{title}: expected one whole-tab protection, found {len(whole)}")
-            continue
-        p = whole[0]
-        if p.get("warningOnly"):
-            probs.append(f"{which}/{title}: protection is warning-only")
-        got = {e.lower() for e in p.get("editors", {}).get("users", [])}
-        if missing := sorted(want_editors - got):
-            probs.append(f"{which}/{title}: protection editors missing {missing}")
-        if extra := sorted(got - want_editors):
-            probs.append(f"{which}/{title}: protection has extra editors {extra}")
-        if p.get("editors", {}).get("groups") or p.get("editors", {}).get("domainUsersCanEdit"):
-            probs.append(f"{which}/{title}: protection is open to a group or domain")
-        want_un = {_rng_key(sheets._grid(real_sid, a)) for a in unprotected}
-        got_un = {_rng_key(u) for u in p.get("unprotectedRanges", [])}
-        if want_un != got_un:
-            probs.append(f"{which}/{title}: unprotected ranges differ from the spec")
+        else:
+            probs += check_tab(by_title[title], f"{which}/{title}", unprotected, editors)
     return probs

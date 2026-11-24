@@ -29,6 +29,14 @@ def main(argv=None):
     if arc:
         print(f"archive    last ok {arc.get('last_ok')}, {arc.get('ebs')} EBs, {arc.get('consecutive_failures', 0)} failed syncs in a row"
               + (f"  ALARM: {arc['alarm']['error']}" if arc.get("alarm") else ""))
+    sh = full.get("sheets")
+    if sh:
+        h = sh.get("health") or {}
+        print(f"sheets     last ok {h.get('last_ok')}, {h.get('consecutive_failures', 0)} failed steps in a row, "
+              f"{sh.get('flag_tabs', 0)} flag tabs, verdicts waiting {sh.get('pending_verdicts') or 'none'}"
+              + (f"  ALARM: {sh['alarm']}" if sh.get("alarm") else ""))
+        for item in sh.get("needs_you") or []:
+            print(f"  needs you: {item['eb']}: {item['item']}: {item['detail']}")
     w = full.get("workers") or {}
     if w:
         by = w.get("in_use_by_kind") or {}

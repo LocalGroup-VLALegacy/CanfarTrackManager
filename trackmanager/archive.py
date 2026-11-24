@@ -172,6 +172,8 @@ def aggregate(rows: list[dict], size_calibration: float = 1.0) -> dict:
                "n_ant": int(_f(first, "num_antennas", 0) or 0), "int_s": _f(first, "t_resolution"),
                "fields": list(dict.fromkeys(r["target_name"] for r in scans)),
                "n_scans": len(scans),
+               "n_spw": max((len([x for x in (r.get("spw_names") or "").split(",") if x.strip()]) for r in scans),
+                            default=0) or None,
                "freq_min_ghz": round(min(fmin) / 1e9, 6) if fmin else None,
                "freq_max_ghz": round(max(fmax) / 1e9, 6) if fmax else None,
                "spw_signature": Counter(sigs).most_common(1)[0][0], "spw_varies": len(set(sigs)) > 1,
@@ -289,8 +291,12 @@ def sync(root, cfg, tap: TapClient | None = None, when=None) -> SyncResult:
         if old is None:
             res.new.append(sdm)
         elif old != rec:
-            res.changed[sdm] = {k: [old.get(k), rec.get(k)] for k in sorted(set(old) | set(rec))
-                                if old.get(k) != rec.get(k)}
+            # a key that older records lack (a field added to the record, e.g. n_spw) is filled in
+            # silently: only values that were there before and differ are a metadata change
+            diff = {k: [old.get(k), rec.get(k)] for k in sorted(set(old) | set(rec))
+                    if old.get(k) != rec.get(k) and k in old}
+            if diff:
+                res.changed[sdm] = diff
         if old != rec:
             write_json(root.archive_json(sdm), rec)
             _write_scans(root.archive_scans(sdm), agg[sdm][1])

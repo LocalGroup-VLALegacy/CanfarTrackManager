@@ -9,8 +9,9 @@ act as a reviewer by writing cells and as the bridge by reading them.
 from __future__ import annotations
 
 import copy
-import itertools
+import pickle
 import re
+from pathlib import Path
 
 from .gsheets import SheetsError
 
@@ -31,11 +32,15 @@ class FakeSheets:
         self.sheets: list[dict] = []
         self.calls = 0
         self.log: list[dict] = []          # every request applied, in order
-        self._pr_ids = itertools.count(1000)
+        self._next_pr = 1000
         self._add({"sheetId": 0, "title": "Sheet1", "index": 0,
                    "gridProperties": {"rowCount": 1000, "columnCount": 26}})
 
     # ---- internals --------------------------------------------------------------------------
+    def _pr_id(self):
+        self._next_pr += 1
+        return self._next_pr
+
     def _add(self, props):
         sh = {"properties": {"index": len(self.sheets), "gridProperties": {"rowCount": 1000, "columnCount": 26},
                              **props}, "protectedRanges": [], "cells": {}, "other": []}
@@ -126,7 +131,7 @@ class FakeSheets:
             new["properties"].update(sheetId=sid, title=title, index=len(self.sheets))
             new["properties"].pop("hidden", None)
             for pr in new["protectedRanges"]:
-                pr["protectedRangeId"] = next(self._pr_ids)
+                pr["protectedRangeId"] = self._pr_id()
                 pr["range"]["sheetId"] = sid
             self.sheets.append(new)
             return {"duplicateSheet": {"properties": copy.deepcopy(new["properties"])}}
@@ -159,7 +164,7 @@ class FakeSheets:
             return {}
         if kind == "addProtectedRange":
             pr = copy.deepcopy(body["protectedRange"])
-            pr["protectedRangeId"] = next(self._pr_ids)
+            pr["protectedRangeId"] = self._pr_id()
             self.sheet(sheet_id=pr["range"]["sheetId"])["protectedRanges"].append(pr)
             return {"addProtectedRange": {"protectedRange": copy.deepcopy(pr)}}
         if kind == "deleteProtectedRange":
@@ -225,3 +230,51 @@ class FakeSheets:
     def get_value(self, title, a1cell):
         sh, r0, _, c0, _ = self._parse(f"'{title}'!{a1cell}")
         return sh["cells"].get((r0, c0))
+
+
+class FileFakeSheets(FakeSheets):
+    """A FakeSheets kept in a pickle file, so a controller run as a subprocess and the test that
+    plays the reviewer share one spreadsheet. The controller uses it when TM_FAKE_SHEETS_DIR is
+    set (tests only): <dir>/<spreadsheet id>.pkl."""
+
+    def __init__(self, path, **kw):
+        self._path = Path(path)
+        super().__init__(**kw)
+        if self._path.exists():
+            self.__dict__.update(pickle.loads(self._path.read_bytes()))
+            self._path = Path(path)
+
+    def _save(self):
+        state = {k: v for k, v in self.__dict__.items() if k != "_path"}
+        tmp = self._path.with_name(self._path.name + ".tmp")
+        tmp.write_bytes(pickle.dumps(state))
+        tmp.replace(self._path)
+
+    def _reload(self):
+        if self._path.exists():
+            self.__dict__.update(pickle.loads(self._path.read_bytes()))
+
+    def meta(self, fields=None):
+        self._reload()
+        out = super().meta(fields)
+        self._save()
+        return out
+
+    def batch_update(self, requests):
+        self._reload()
+        try:
+            return super().batch_update(requests)
+        finally:
+            self._save()
+
+    def values_get(self, ranges, render="FORMATTED_VALUE"):
+        self._reload()
+        out = super().values_get(ranges, render)
+        self._save()
+        return out
+
+    def values_update(self, data, input="USER_ENTERED"):
+        self._reload()
+        out = super().values_update(data, input)
+        self._save()
+        return out

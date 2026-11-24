@@ -24,7 +24,9 @@ def apply(ctl, st, d):
     if bad:
         return f"ignored: unknown input files {bad} (allowed: {list(states.INPUT_FILES)})"
     review = {"iteration": n, "verdict": d["action"], "by": by, "decided": d.get("ts"),
-              "applied": iso(), "notes": d.get("notes", ""), "inputs_next": sorted(inputs)}
+              "applied": iso(), "notes": d.get("notes", ""), "inputs_next": sorted(inputs),
+              # from the Sheets bridge: the sign-up name, when it was first seen, the verdict as typed
+              **{k: d[k] for k in ("reviewer", "signed_up", "source", "verdict_word") if d.get(k) is not None}}
     k = st.get("attempt") or 0
     att = read_json(ctl.r.attempt(eb, n, k)) if k else None
     if att:  # the job log shows which job's output each verdict was about

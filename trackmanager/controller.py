@@ -14,6 +14,10 @@ Each cycle (plan §3.3) it:
      rest stay queued, with queue_position and blocked_by recorded in state/;
   6. writes state/summary.json and jobs/summary.json, and hands off to a successor session when
      controller.relaunch_after_d has passed.
+With sheets.enabled, the Sheets bridge (sheets_bridge.py) reads sign-ups and verdicts before step 3
+(a verdict becomes an inbox/ decision, applied in the same cycle) and mirrors the database to the
+tracker and flag book after step 6. Such a controller keeps running until every track is terminal,
+since verdicts arrive through the sheets.
 
 Stages and their edges are in states.py (10 stages; progress inside a stage is the `activity`
 field). Tracks come from project.yaml's `tracks` and from "request" actions in inbox/
@@ -66,7 +70,7 @@ from pathlib import Path
 
 from . import archive
 from . import config as projconfig
-from . import disk, inbox, qa, scheduler
+from . import disk, inbox, qa, scheduler, sheets_bridge
 from . import jobs as joblog
 from . import states as S
 from .stages import calibrate, discover, promote, qa_publish, stage_local
@@ -120,6 +124,7 @@ class Controller:
         self.workers: dict = {}
         self.disk: dict = {}
         self.cycle_cache: dict = {}  # per-cycle values shared by handlers (reset in cycle())
+        self.bridge = sheets_bridge.Bridge(self) if cfg.sheets.enabled else None
 
     # ---- database helpers ------------------------------------------------
     def event(self, eb, frm, to, reason, **extra):
@@ -276,8 +281,10 @@ class Controller:
         lease["heartbeat"] = iso()
         write_json(self.r.lease, lease)
         alarm = archive.alarm(self.r)
+        sheets_alarm = self.bridge.alarm() if self.bridge else None
         write_json(self.r.heartbeat, {"holder": self.me, "ts": iso(), "cycle": self.cycle_n,
                                       **({"archive_alarm": alarm} if alarm else {}),
+                                      **({"sheets_alarm": sheets_alarm} if sheets_alarm else {}),
                                       "host": socket.gethostname(), **cert_info()})
 
     # ---- one cycle -------------------------------------------------------
@@ -293,6 +300,8 @@ class Controller:
         discover.sync(self)  # archive tracks (DISCOVERED) before requests and config tracks
         for e in self.cfg.track_specs():  # config tracks enter the queue before any requests
             self.load_state(e["eb"])
+        if self.bridge:
+            self.bridge.ingest()  # sign-ups; verdicts -> inbox/, applied just below
         inbox.apply(self)
         states = {eb: self.load_state(eb) for eb in self.track_ids()}
         for st in states.values():
@@ -301,8 +310,12 @@ class Controller:
                 handler(self, st)
         self.schedule(states)
         self.write_summaries(states)
-        if not self.settled(states):
-            self.maybe_handoff()
+        if self.bridge:
+            self.bridge.publish(states)
+            summ = read_json(self.r.summary) or {}
+            write_json(self.r.summary, {**summ, "sheets": self.bridge.status()})
+        if not self.settled(states) or self.stays_up():
+            self.maybe_handoff()  # a controller that stays up still needs a successor (14-day limit)
 
     def schedule(self, states):
         """Submit queued tracks that the scheduler admits; the rest wait in the database with
@@ -357,6 +370,11 @@ class Controller:
     @staticmethod
     def settled(states):
         return bool(states) and all(st["stage"] in S.SETTLED for st in states.values())
+
+    def stays_up(self):
+        """Whether this controller keeps running when every track has settled: it then waits for
+        input that arrives on its own (archive syncs, sheet verdicts) or was asked to."""
+        return bool(self.cfg.controller.keep_running or archive.enabled(self.cfg) or self.cfg.sheets.enabled)
 
     def cancel_successor(self, reason):
         """Destroy a requested successor that is no longer needed (default on a normal finish)."""
@@ -477,8 +495,10 @@ def main(argv=None):
         ctl.cycle()
         stages = {st["stage"] for st in (read_json(ctl.r.summary) or {}).get("ebs", {}).values()}
         settled = stages and stages <= S.SETTLED
-        if (a.max_cycles and ctl.cycle_n >= a.max_cycles) or (settled and not cfg.controller.keep_running
-                                           and not archive.enabled(cfg)):
+        # sheet verdicts arrive on their own, so a sheets project stops only once every track is terminal
+        finished = (stages and stages <= S.TERMINAL) if cfg.sheets.enabled and not archive.enabled(cfg) \
+            else settled and not ctl.stays_up()
+        if (a.max_cycles and ctl.cycle_n >= a.max_cycles) or finished:
             log(f"stopping after cycle {ctl.cycle_n}: stages {sorted(stages)}")
             if cfg.controller.cancel_successor_on_finish:
                 ctl.cancel_successor("work finished")

@@ -124,8 +124,17 @@ def tracker_row(tab_spec: dict, ctx: dict, row: int, existing: dict | None = Non
 
 
 def flag_tab_name(spec: dict, archive: dict) -> str:
-    return spec["flagbook"]["tab_name"].format(config=archive["config"], project=archive["project"],
-                                               mjd=int(float(archive["mjd"])), ebid=archive["ebid"])
+    """<config>_<project>_<mjd>_<ebid>. An EB with no EB id (TAP names a few
+    `<project>_sb<sbid>_<n>_<m>.<mjd>`) or a track with no archive record uses its SDM or track
+    name instead, so every track gets a distinct tab name."""
+    try:
+        if not archive.get("ebid"):
+            raise KeyError("ebid")
+        return spec["flagbook"]["tab_name"].format(config=archive["config"], project=archive["project"],
+                                                   mjd=int(float(archive["mjd"])), ebid=archive["ebid"])
+    except (KeyError, TypeError, ValueError):
+        name = str(archive.get("sdm") or archive.get("eb") or "track")
+        return (f"{archive['config']}_" if archive.get("config") else "") + name[-90:]
 
 
 def flag_tab_cells(spec: dict, ctx: dict) -> dict:
