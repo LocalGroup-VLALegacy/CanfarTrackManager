@@ -413,6 +413,7 @@ class Bridge:
             self._acknowledge()
             self._books(states)
             self._write(states)
+            self._exports(states)              # after the write: the CSV holds the final verdict status
             if self.cycles == 1 or self.cycles % self.cfg.sheets.protection_check_cycles == 0:
                 self._check_protection(states)
             self._ok()
@@ -465,12 +466,16 @@ class Bridge:
         return f"{self.cfg.name} flags {title}"
 
     def _books(self, states):
-        """A flag spreadsheet for each track that reaches calibration (copied from TEMPLATE), and a
-        CSV of a finished track's sheet. Nothing is hidden or deleted."""
+        """A flag spreadsheet for each track that reaches calibration (copied from TEMPLATE)."""
         tabs = self.state["tabs"]
         for eb, st in states.items():
             if st["stage"] in BOOK_STAGES and eb not in tabs:
                 self._create_book(eb, st)
+
+    def _exports(self, states):
+        """A CSV of a finished track's sheet, taken after this cycle's writes (live, 2026-11-24: taken
+        before them, it missed the COMPLETE acknowledgement). Nothing is hidden or deleted."""
+        tabs = self.state["tabs"]
         for eb, st in states.items():
             t = tabs.get(eb)
             if st["stage"] in DONE_STAGES and t and not t.get("missing") \

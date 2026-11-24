@@ -183,7 +183,9 @@ def test_review_loop_through_the_sheets(tmp_path):
     assert m and int(m.group(1)) < 10, p.output[-2000:]                # exits once every track is terminal
     assert sh.tracker("Track Summary", 2, "Stage") == "DONE"
     assert sh.tracker("Track Summary", 2, "Verdict") == "COMPLETE (iteration 2)"
-    assert (root / "tracks" / "trk-a" / "flag_tab.csv").read_text().count("ea10") >= 1
+    csv = (root / "tracks" / "trk-a" / "flag_tab.csv").read_text()
+    assert csv.count("ea10") >= 1
+    assert "iteration 2: COMPLETE applied" in csv and "COMPLETED" in csv     # taken after the final writes
     assert not sh.book(title).sheet(title)["properties"].get("hidden")   # the sheet stays, visible
     assert sh.cell(title, "O2") == "COMPLETED"
     evs = [e["reason"] for e in read_jsonl(root / "events.jsonl")]
