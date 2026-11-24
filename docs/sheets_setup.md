@@ -65,6 +65,20 @@ The owner of a spreadsheet can always edit its protected ranges, as can the edit
   It writes `<root>/probes/sheets-<session>.json`.
 - Keep the spreadsheet locale as English (`en_CA`/`en_US`). In locales that use a decimal comma, a scan list typed as `3,4` would be read as a number.
 
+## What the controller does with the sheets
+With `sheets.enabled`, each controller cycle runs the Sheets bridge (`trackmanager/sheets_bridge.py`):
+- **Rows.** Every track has one row in each tracker tab; rows are appended and never moved. Only changed cells are written, as one write per spreadsheet per cycle.
+- **Flag tabs.** A track's tab is copied from `TEMPLATE` when it first starts calibrating, so reviewers can add rows while it runs. At DONE (or SKIPPED / NEEDS_MANUAL) the tab is saved to `tracks/<EB>/flag_tab.csv` and hidden; `sheets.drop_done_tabs_after_d` days later it is deleted.
+- **Sign-ups.** The first time a name appears in `QA Reviewer` the bridge stamps `Signed up (UTC)` in Track Summary. A sign-up without a valid email shows as a "needs you" item.
+- **Verdicts (M1).** Read only while the track is `AWAITING_REVIEW`; a verdict set earlier is cleared, with a note in M2.
+  - **RESTART** reruns the pipeline with every ticked row, including rows from earlier iterations, plus the avoid-refant list in O1. Every row is checked first; problems go to the row's `Check` cell and M2, and the verdict stays in M1 until the rows are fixed.
+  - **COMPLETE** promotes the track.
+  - **MANUAL REVIEW** and **HELP REQUESTED** put the track on HOLD for the operator, with no rerun, until a later COMPLETE or RESTART.
+  - Once the controller has applied a verdict, M2 says so and M1 is cleared, unless the reviewer has changed it in the meantime.
+- **Bridge state** is in `<root>/sheets/` (`bridge.json`, `mirror.json`, `status.json`). `python -m trackmanager.status --root <root>` shows the sheets line, any alarm, and the "needs you" items.
+- **Protections** are read back every `sheets.protection_check_cycles` cycles. Any drift raises an alarm but changes nothing.
+- **If Google is unreachable,** no track state changes. The alarm is raised after 3 failed steps in a row.
+
 ## Notes
 - Nothing reviewers type into the sheets is executed. The controller rebuilds every flag command from the raw cells and checks it against the track's metadata (`trackmanager/flagcmds.py`).
 - NRAO download links never go into the sheets, which are shared with reviewers. They come in only through the dashboard (plan §3.2).
