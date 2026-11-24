@@ -287,10 +287,9 @@ class FakeDrive:
         if self.dir:
             (self.dir / "drive.pkl").write_bytes(pickle.dumps(self.files))
 
-    def folder(self):
+    def check_writable(self):
         self.calls += 1
-        return {"id": self.id, "name": "flags", "mimeType": "application/vnd.google-apps.folder",
-                "trashed": False, "capabilities": {"canAddChildren": True}}
+        return {"shared_drive": None}
 
     def create_spreadsheet(self, name, app_properties):
         self.calls += 1

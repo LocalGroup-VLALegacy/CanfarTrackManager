@@ -152,9 +152,21 @@ class DriveClient(_Client):
     def __init__(self, folder_id: str, credentials=None, session=None, **kw):
         super().__init__(folder_id, credentials, session, scopes=DRIVE_SCOPES, **kw)
 
-    def folder(self) -> dict:
-        return self._call("GET", "", params={"fields": "id,name,mimeType,trashed,capabilities(canAddChildren)",
-                                             "supportsAllDrives": "true"})
+    def check_writable(self) -> dict:
+        """Create a small marker folder in the flags folder and trash it. The drive.file scope can
+        create, find and trash the files this client makes in a folder shared with the service
+        account, but cannot read the shared folder itself (live, 2026-11-24: GET on the folder is
+        404 under drive.file), so writing is the only check. Returns {"shared_drive": <id or None>}."""
+        f = self._call("POST", DRIVE, params={"fields": "id,driveId", "supportsAllDrives": "true"},
+                       json={"name": ".trackmanager write check (safe to delete)", "parents": [self.id],
+                             "mimeType": "application/vnd.google-apps.folder"})
+        self.trash(f["id"])
+        return {"shared_drive": f.get("driveId")}
+
+    def trash(self, file_id: str) -> dict:
+        """Trash, not delete: in a shared drive the drive owns the files, and only its managers can delete."""
+        return self._call("PATCH", f"{DRIVE}/{file_id}", params={"fields": "id,trashed", "supportsAllDrives": "true"},
+                          json={"trashed": True})
 
     def create_spreadsheet(self, name: str, app_properties: dict) -> dict:
         return self._call("POST", DRIVE, params={"fields": "id,name,webViewLink", "supportsAllDrives": "true"},

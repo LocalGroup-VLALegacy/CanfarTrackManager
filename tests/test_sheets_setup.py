@@ -236,7 +236,7 @@ def test_init_sheets_step(tmp_path, cfg):
     root = Root(cfg.root)
     lines, code = init.sheets_step(cfg, root, make_client=fakes.__getitem__, drive=FakeDrive("FOLDER"))
     assert code == 0, lines
-    assert any("flags folder FOLDER ('flags'): writable" in ln for ln in lines)
+    assert any("flags folder FOLDER: writable" in ln for ln in lines)
     assert "Track Summary" in [s["properties"]["title"] for s in fakes["T"].meta()["sheets"]]
     assert "TEMPLATE" in [s["properties"]["title"] for s in fakes["F"].meta()["sheets"]]
     assert list((cfg.root / "reports").glob("sheets-*.json"))
@@ -276,3 +276,14 @@ def test_build_reports_a_tracker_tab_with_an_old_column_order(cfg):
     f.values_update([("'QA Sign-up'!A1:C1", [["Date", "Track Name", "EBID"]])])
     probs = sheets_setup.build(cfg, f, "tracker", SA)["problems"]
     assert len(probs) == 1 and probs[0].startswith("tracker/QA Sign-up: header row differs")
+
+
+def test_drive_write_check_creates_then_trashes_a_marker():
+    """drive.file cannot read a folder shared with the service account, only create files in it
+    (live, 2026-11-24), so the folder check writes a marker and trashes it."""
+    s = Session([Resp(200, {"id": "m1", "driveId": "SD"}), Resp(200, {"id": "m1", "trashed": True})])
+    d = gsheets.DriveClient("FOLDER", session=s, sleep=lambda x: None)
+    assert d.check_writable() == {"shared_drive": "SD"}
+    (m1, u1, k1), (m2, u2, k2) = s.seen
+    assert m1 == "POST" and k1["json"]["parents"] == ["FOLDER"] and k1["params"]["supportsAllDrives"] == "true"
+    assert m2 == "PATCH" and u2.endswith("/m1") and k2["json"] == {"trashed": True}

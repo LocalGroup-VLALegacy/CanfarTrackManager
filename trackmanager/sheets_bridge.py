@@ -172,10 +172,8 @@ class Bridge:
         if missing:
             raise gsheets.SheetsError(f"spreadsheet tabs missing ({', '.join(missing)}): run "
                                       "python -m trackmanager.init --project <project.yaml> --sheets")
-        folder = self.drive.folder()
-        if folder.get("trashed") or not (folder.get("capabilities") or {}).get("canAddChildren"):
-            raise gsheets.SheetsError(f"flags folder {self.cfg.sheets.flags_folder_id} is trashed or not "
-                                      "writable: share it with the service account as Editor")
+        # The flags folder is not read here: under drive.file it cannot be (init --sheets checks it
+        # by writing). A folder that is not writable shows as a failed sheet creation and the alarm.
         self.template_gid = ftitles[self.fb["template_tab"]]["sheetId"]
         self.readme_gid = ftitles["README"]["sheetId"]
         if not any(self.state["rows"].values()):

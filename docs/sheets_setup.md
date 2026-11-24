@@ -17,8 +17,10 @@ The owner of a spreadsheet can always edit its protected ranges, as can the edit
 ## Google Cloud (once)
 1. Sign in as the project account at console.cloud.google.com. Use a consumer account, or a Workspace account whose organisation does not enforce `iam.disableServiceAccountKeyCreation`.
 2. Create a project. Billing is not needed.
-3. **APIs & Services → Library: enable the Google Sheets API and the Google Drive API.** Drive is used only with the `drive.file` scope: the service account creates the track spreadsheets in the flags folder and can see only those files and the folder.
-4. **IAM & Admin → Service Accounts → Create.** Grant it **no roles**: its access comes only from what is shared with it. It owns the track spreadsheets it creates (they use its own 15 GB Drive quota), so **don't delete the service account or its Cloud project** while a project's sheets are in use: its files go with it. The durable record stays on `/arc` (every iteration's frozen `inputs/` and `tracks/<EB>/flag_tab.csv`).
+3. **APIs & Services → Library: enable the Google Sheets API and the Google Drive API.** Drive is used only with the `drive.file` scope: the service account can create, find and trash the track spreadsheets it makes in the flags folder, and nothing else. It cannot even read the folder's own details, so `init` checks the folder by creating a marker and trashing it.
+4. **IAM & Admin → Service Accounts → Create.** Grant it **no roles**: its access comes only from what is shared with it. Who owns the track spreadsheets depends on the flags folder:
+   - **in a shared drive:** the drive owns them and they use its storage. Deleting the service account loses nothing;
+   - **in a My Drive folder:** the service account owns them (its own 15 GB quota). **Don't delete the service account or its Cloud project** while a project's sheets are in use, because its files go with it. The durable record stays on `/arc` (every iteration's frozen `inputs/` and `tracks/<EB>/flag_tab.csv`).
 5. **Keys → Add key → JSON.** Copy the file to CANFAR, then lock it down:
    ```
    chmod 700 /arc/projects/<space>/secrets
@@ -46,7 +48,7 @@ The owner of a spreadsheet can always edit its protected ranges, as can the edit
    ```
    python -m trackmanager.init --project project.yaml --sheets
    ```
-   - It sets both spreadsheets to UTC, creates the managed tabs from `trackmanager/templates/sheets/spec_v1.yaml` and removes the empty `Sheet1`. It checks that the flags folder is writable.
+   - It sets both spreadsheets to UTC, creates the managed tabs from `trackmanager/templates/sheets/spec_v1.yaml` and removes the empty `Sheet1`. It checks that the flags folder is writable by creating a marker (`.trackmanager write check`) and moving it to the trash.
    - It protects every tab, with the service account plus `sheets.editors` as the only editors.
    - It reads the protections back and reports any difference from the spec.
    - It is safe to rerun: existing tabs are only checked, never rebuilt.

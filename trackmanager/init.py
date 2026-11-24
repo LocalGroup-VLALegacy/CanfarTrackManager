@@ -136,12 +136,10 @@ def sheets_step(cfg, root: Root, make_client=None, drive=None) -> tuple[list[str
         code = code or (1 if rep["problems"] else 0)
     folder_id = cfg.sheets.flags_folder_id
     try:
-        f = (drive or gsheets.DriveClient(folder_id, credentials=cfg.sheets_key)).folder()
-        ok = not f.get("trashed") and (f.get("capabilities") or {}).get("canAddChildren")
-        out.append(f"  flags folder {folder_id} ({f.get('name')!r}): "
-                   + ("writable; one flag spreadsheet per track is created here" if ok
-                      else "NOT writable: share it with the service account as Editor"))
-        code = code or (0 if ok else 2)
+        f = (drive or gsheets.DriveClient(folder_id, credentials=cfg.sheets_key)).check_writable()
+        out.append(f"  flags folder {folder_id}: writable; one flag spreadsheet per track is created here"
+                   + (" (a shared drive: it owns the track sheets, and storage counts against it)"
+                      if f.get("shared_drive") else " (the service account owns the track sheets)"))
     except gsheets.SheetsError as e:
         out.append(f"  flags folder {folder_id}: FAILED: {e}"
                    + (" (is it shared with the service account as Editor?)" if e.status in (403, 404) else ""))
