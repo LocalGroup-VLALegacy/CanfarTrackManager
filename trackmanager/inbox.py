@@ -3,7 +3,7 @@ The controller is the only writer of state/, so every action goes through here."
 from __future__ import annotations
 import re
 
-from . import review
+from . import reopen, review
 from . import states
 from .states import REVIEW_ACTIONS
 from .store import iso, log, read_json, write_json
@@ -52,6 +52,8 @@ def apply(ctl):
             ctl.set_stage(st, states.NEEDS_MANUAL, None, f"operator: needs manual work ({d.get('by', '?')}"
                           + (f": {d['notes']})" if d.get("notes") else ")"))
             result = "applied"
+        elif st and action == "reopen":
+            result = reopen.apply(ctl, st, d)
         elif st and action in ("hold", "release"):
             st["hold"] = action == "hold"
             write_json(ctl.r.state(eb), st)

@@ -91,3 +91,14 @@ def test_summary_is_in_tb():
     g = disk.Gate([st("r", S.CALIBRATING, S.RUNNING)], lim(quota=2, free=0.5), lambda s: {})
     assert g.summary() == {"quota_tb": 2.0, "min_free_tb": 0.5, "modelled_used_tb": 0.8, "free_tb": 0.7,
                            "disk_factor": 8.0, "unsized_tracks": 0}
+
+
+def test_a_reopened_track_still_holds_its_superseded_splits_and_earlier_products():
+    from trackmanager import disk
+    base = {"eb": "r", "stage": "STAGING", "activity": "queued", "iteration": 3}
+    fresh = disk.held_gb({**base, "iteration": 1}, 100.0, 8.0)
+    again = disk.held_gb({**base, "reopened": [{"from_iteration": 2}]}, 100.0, 8.0)
+    assert fresh == 0.0
+    assert again == pytest.approx(100 * (disk.SPLIT_FACTOR + 2 * disk.PRODUCTS_FACTOR))
+    done = disk.held_gb({**base, "stage": "DONE", "completed_iteration": 3, "reopened": [{}]}, 100.0, 8.0)
+    assert done == pytest.approx(100 * (2 * disk.SPLIT_FACTOR + 3 * disk.PRODUCTS_FACTOR))

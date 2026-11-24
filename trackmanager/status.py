@@ -33,7 +33,7 @@ def main(argv=None):
     if sh:
         h = sh.get("health") or {}
         print(f"sheets     last ok {h.get('last_ok')}, {h.get('consecutive_failures', 0)} failed steps in a row, "
-              f"{sh.get('flag_tabs', 0)} flag tabs, verdicts waiting {sh.get('pending_verdicts') or 'none'}"
+              f"{sh.get('flag_sheets', 0)} track flag sheets, verdicts waiting {sh.get('pending_verdicts') or 'none'}"
               + (f"  ALARM: {sh['alarm']}" if sh.get("alarm") else ""))
         for item in sh.get("needs_you") or []:
             print(f"  needs you: {item['eb']}: {item['item']}: {item['detail']}")

@@ -74,12 +74,14 @@ def latest_job(jobs: dict, eb: str) -> dict:
 
 
 def last_verdict(r, st) -> str:
-    """The most recent verdict on this track, e.g. "RESTART (iteration 1)"."""
+    """The most recent verdict on this track, e.g. "RESTART (iteration 1)"; a COMPLETE that was
+    undone by `reopen` reads "COMPLETE (iteration 1, reopened)"."""
+    reopened = {x.get("from_iteration") for x in st.get("reopened") or []}
     for n in range(st.get("iteration", 1), 0, -1):
         rv = read_json(r.review(st["eb"], n))
         if rv and rv.get("verdict"):
             word = rv.get("verdict_word") or rv["verdict"].replace("_", " ").upper()
-            return f"{word} (iteration {n})"
+            return f"{word} (iteration {n}{', reopened' if n in reopened else ''})"
     return ""
 
 

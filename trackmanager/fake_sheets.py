@@ -26,8 +26,11 @@ def _col(letters: str) -> int:
 
 
 class FakeSheets:
+    REGISTRY: dict = {}          # in-memory spreadsheets by id, for copy_sheet_to and FakeDrive
+
     def __init__(self, title="fake", spreadsheet_id="fake-id", time_zone="America/Vancouver"):
         self.id = spreadsheet_id
+        FakeSheets.REGISTRY[spreadsheet_id] = self
         self.props = {"title": title, "timeZone": time_zone, "locale": "en_CA"}
         self.sheets: list[dict] = []
         self.calls = 0
@@ -224,6 +227,37 @@ class FakeSheets:
                     sh["cells"][(r0 + i, c0 + j)] = v
         return {}
 
+    def _resolve(self, other_id):
+        if other_id not in FakeSheets.REGISTRY:
+            raise SheetsError(f"spreadsheet {other_id} not found", 404)
+        return FakeSheets.REGISTRY[other_id]
+
+    def copy_sheet_to(self, sheet_id, destination_id):
+        """Like spreadsheets.sheets.copyTo: the tab (cells, formats, validation) without its
+        protection, titled "Copy of ...", added at the end of the destination."""
+        self.calls += 1
+        self._reload()
+        src = copy.deepcopy(self.sheet(sheet_id=sheet_id))
+        dest = self._resolve(destination_id)
+        dest._reload()
+        sid = max(s["properties"]["sheetId"] for s in dest.sheets) + 1 if dest.sheets else 0
+        src["properties"].update(sheetId=sid, index=len(dest.sheets), title=f"Copy of {src['properties']['title']}")
+        src["protectedRanges"] = []
+        for o in src["other"]:
+            for body in o.values():
+                rng = body.get("range") or (body.get("rule", {}).get("ranges") or [{}])[0]
+                if "sheetId" in rng:
+                    rng["sheetId"] = sid
+        dest.sheets.append(src)
+        dest._save()
+        return copy.deepcopy(src["properties"])
+
+    def _reload(self):
+        pass
+
+    def _save(self):
+        pass
+
     # ---- test helpers -----------------------------------------------------------------------
     def set_value(self, title, a1cell, value):
         """Write one cell as a person (or an evaluated formula) would."""
@@ -233,6 +267,62 @@ class FakeSheets:
     def get_value(self, title, a1cell):
         sh, r0, _, c0, _ = self._parse(f"'{title}'!{a1cell}")
         return sh["cells"].get((r0, c0))
+
+
+class FakeDrive:
+    """The flags folder: create_spreadsheet makes a FakeSheets (in memory, or FileFakeSheets when
+    `directory` is given, so a subprocess controller and the test share it)."""
+
+    def __init__(self, folder_id="folder", directory=None):
+        self.id, self.dir = folder_id, Path(directory) if directory else None
+        self.calls = 0
+        self.files: dict = {}
+        self._load()
+
+    def _load(self):
+        if self.dir and (self.dir / "drive.pkl").exists():
+            self.files = pickle.loads((self.dir / "drive.pkl").read_bytes())
+
+    def _save(self):
+        if self.dir:
+            (self.dir / "drive.pkl").write_bytes(pickle.dumps(self.files))
+
+    def folder(self):
+        self.calls += 1
+        return {"id": self.id, "name": "flags", "mimeType": "application/vnd.google-apps.folder",
+                "trashed": False, "capabilities": {"canAddChildren": True}}
+
+    def create_spreadsheet(self, name, app_properties):
+        self.calls += 1
+        self._load()
+        fid = f"book{len(self.files) + 1}"
+        self.files[fid] = {"id": fid, "name": name, "parents": [self.id], "trashed": False,
+                           "appProperties": {k: str(v) for k, v in app_properties.items()}}
+        if self.dir:
+            FileFakeSheets(self.dir / f"{fid}.pkl", title=name, spreadsheet_id=fid)._save()
+        else:
+            FakeSheets(title=name, spreadsheet_id=fid)
+        self._save()
+        return {"id": fid, "name": name, "webViewLink": f"https://docs.google.com/spreadsheets/d/{fid}/edit"}
+
+    def find(self, app_properties):
+        self.calls += 1
+        self._load()
+        want = {k: str(v) for k, v in app_properties.items()}
+        return [{"id": f["id"], "name": f["name"]} for f in self.files.values()
+                if not f["trashed"] and all(f["appProperties"].get(k) == v for k, v in want.items())]
+
+    def get(self, file_id):
+        self.calls += 1
+        self._load()
+        if file_id not in self.files:
+            raise SheetsError(f"file {file_id} not found", 404)
+        return dict(self.files[file_id])
+
+    def trash(self, file_id):           # test helper: someone deletes a track's spreadsheet
+        self._load()
+        self.files[file_id]["trashed"] = True
+        self._save()
 
 
 class FileFakeSheets(FakeSheets):
@@ -256,6 +346,12 @@ class FileFakeSheets(FakeSheets):
     def _reload(self):
         if self._path.exists():
             self.__dict__.update(pickle.loads(self._path.read_bytes()))
+
+    def _resolve(self, other_id):
+        path = self._path.parent / f"{other_id}.pkl"
+        if not path.exists():
+            raise SheetsError(f"spreadsheet {other_id} not found", 404)
+        return FileFakeSheets(path, spreadsheet_id=other_id)
 
     def meta(self, fields=None):
         self._reload()

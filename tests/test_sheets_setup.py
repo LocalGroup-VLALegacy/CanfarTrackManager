@@ -11,7 +11,7 @@ import yaml
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 from trackmanager import config, gsheets, init, sheets, sheets_setup  # noqa: E402
-from trackmanager.fake_sheets import FakeSheets  # noqa: E402
+from trackmanager.fake_sheets import FakeDrive, FakeSheets  # noqa: E402
 from trackmanager.store import Root, iso, write_json  # noqa: E402
 
 SA = "controller@example.iam.gserviceaccount.com"
@@ -30,7 +30,8 @@ def project(tmp_path, **sheets_over):
     data = {"project": {"name": "VVINGS-test", "root": str(tmp_path / "run")},
             "review": {"email_prefix": "[VVINGS-QA]"},
             "qa": {"products_dir": "/arc/projects/VVINGS/calibrated/products"},
-            "sheets": {"enabled": True, "tracker_id": "T", "flagbook_id": "F", "credentials": str(key),
+            "sheets": {"enabled": True, "tracker_id": "T", "flagbook_id": "F", "flags_folder_id": "FOLDER",
+                       "credentials": str(key),
                        "editors": ["koch.eric.w@gmail.com"],
                        "links": {"qa_guide": "https://example.org/g", "flag_rows_help": "https://example.org/h"},
                        **sheets_over}}
@@ -169,7 +170,7 @@ def test_build_flagbook_template_and_readme(cfg):
     assert f.get_value("TEMPLATE", "R7").startswith('=IF(Q7="", "", "mode=')
     assert f.get_value("TEMPLATE", "D7") is False
     assert f.get_value("TEMPLATE", "I2") == '=HYPERLINK("https://example.org/g", "QA Guide")'
-    assert f.get_value("README", "A1").startswith("One tab per track.")
+    assert f.get_value("README", "A1").startswith("Each track has its own flag spreadsheet")
 
 
 def test_build_keeps_a_nonempty_sheet1_and_refuses_a_taken_sheet_id(cfg):
@@ -207,9 +208,10 @@ def test_check_reports_protection_drift(cfg):
 # ---- config and init -------------------------------------------------------------------------------
 def test_sheets_config_validation(tmp_path):
     with pytest.raises(config.ConfigError) as e:
-        config.load(project(tmp_path, tracker_id=None, links={}), check_paths=False)
+        config.load(project(tmp_path, tracker_id=None, flags_folder_id=None, links={}), check_paths=False)
     msg = str(e.value)
     assert "sheets.tracker_id is required" in msg and "sheets.links.qa_guide is required" in msg
+    assert "sheets.flags_folder_id is required" in msg
     with pytest.raises(config.ConfigError, match="must be different"):
         config.load(project(tmp_path, flagbook_id="T"), check_paths=False)
     with pytest.raises(config.ConfigError, match="list of email addresses"):
@@ -232,14 +234,15 @@ def test_unset_editors_fall_back_to_the_default(tmp_path):
 def test_init_sheets_step(tmp_path, cfg):
     fakes = {"T": FakeSheets(spreadsheet_id="T"), "F": FakeSheets(spreadsheet_id="F")}
     root = Root(cfg.root)
-    lines, code = init.sheets_step(cfg, root, make_client=fakes.__getitem__)
+    lines, code = init.sheets_step(cfg, root, make_client=fakes.__getitem__, drive=FakeDrive("FOLDER"))
     assert code == 0, lines
+    assert any("flags folder FOLDER ('flags'): writable" in ln for ln in lines)
     assert "Track Summary" in [s["properties"]["title"] for s in fakes["T"].meta()["sheets"]]
     assert "TEMPLATE" in [s["properties"]["title"] for s in fakes["F"].meta()["sheets"]]
     assert list((cfg.root / "reports").glob("sheets-*.json"))
     # a live controller blocks it
     write_json(root.lease, {"holder": "abc", "heartbeat": iso(), "released": False})
-    lines, code = init.sheets_step(cfg, root, make_client=fakes.__getitem__)
+    lines, code = init.sheets_step(cfg, root, make_client=fakes.__getitem__, drive=FakeDrive("FOLDER"))
     assert code == 2 and "holds the lease" in lines[0]
 
 

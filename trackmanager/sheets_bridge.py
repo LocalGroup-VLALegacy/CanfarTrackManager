@@ -1,20 +1,31 @@
 """Sheets bridge (plan §3.5, M4): a synchronous step of the controller's cycle that mirrors the
-track database to the tracker and flag book, and reads reviewers' sign-ups and verdicts back.
+track database to the tracker and to one flag spreadsheet per track, and reads reviewers'
+sign-ups, flag rows and verdicts back.
 
-    bridge.ingest()        before inbox.apply: read the sign-up columns and every live flag tab;
-                           stamp sign-ups; turn a valid verdict (M1) into inbox/decisions/sheets-*.json
-                           (RESTART carries the flag file rebuilt from ALL ticked rows by flagcmds,
-                           plus O1 as refant_ignore.txt); a verdict with problems stays in M1, with
-                           the problems in the row's Check cell and a summary in M2
-    bridge.publish(states) after the summaries: acknowledge processed verdicts (M2, clear M1,
-                           stamp "Added in iter"), create a flag tab when a track first calibrates,
-                           export/hide/delete it after DONE, write every changed controller cell in
-                           one values batch per spreadsheet, check protections every N cycles
+Google side (decided 2026-11-24): the tracker (Track Summary, QA Sign-up); a template workbook
+(`sheets.flagbook_id`: README and the project's flag TEMPLATE, which holds its likely flags); and a
+Drive folder (`sheets.flags_folder_id`) where the service account creates one spreadsheet per track
+when it is first queued for calibration, copied from TEMPLATE. Track spreadsheets are never hidden
+or deleted: they stay readable, and editable, after DONE, so a track completed by mistake can be
+reopened (operator action `reopen`) and its next run uses the sheet's ticked rows.
 
-The controller stays the only writer of state/: the bridge only writes inbox/ and its own
-<root>/sheets/ files:
-  bridge.json   spreadsheet ids, row of each track per tracker tab, flag tabs, sign-ups, acks,
-                per-row problems, verdicts waiting for the controller
+    bridge.ingest()        before inbox.apply: read the sign-up columns and the flag sheet of every
+                           track that is calibrating or in review; stamp sign-ups; turn a valid verdict
+                           (M1) into inbox/decisions/sheets-*.json (RESTART carries the flag file rebuilt
+                           from ALL ticked rows by flagcmds, plus O1 as refant_ignore.txt); a verdict
+                           with problems stays in M1, with the problems in the row's Check cell and M2
+    bridge.run_inputs(st)  from calibrate.submit, before the first attempt of an iteration whose
+                           inputs are not frozen yet (iteration 1, or the run after a reopen): freeze
+                           the ticked rows of the track's sheet into iter_<n>/inputs/
+    bridge.publish(states) after the summaries: acknowledge processed verdicts (M2, clear M1, stamp
+                           "Added in iter"), create track spreadsheets, save a finished track's sheet
+                           to tracks/<EB>/flag_tab.csv, write every changed controller cell (one values
+                           write per spreadsheet that changed), check protections every N cycles
+
+The controller stays the only writer of state/: the bridge only writes inbox/, iteration inputs it
+is asked to freeze, and its own <root>/sheets/ files:
+  bridge.json   spreadsheet ids, row of each track per tracker tab, each track's flag spreadsheet,
+                sign-ups, acks, per-row problems, verdicts waiting for the controller
   mirror.json   the last value written to each controller cell (writes are diffs against it)
   status.json   health (last ok, failures in a row, error), protection drift, "needs you" items
 A Google failure changes no track state: the step is skipped, counted, and from 3 failures in a
@@ -38,8 +49,9 @@ from .store import age_s, create_json, iso, log, read_json, write_json
 
 VERDICTS = {"COMPLETE": "pass", "RESTART": "restart", "MANUAL REVIEW": "manual_review",
             "HELP REQUESTED": "help_requested"}
-TAB_STAGES = (S.CALIBRATING, S.AWAITING_REVIEW, S.PROMOTING)   # a track gets its flag tab here
-DONE_STAGES = (S.DONE, S.SKIPPED, S.NEEDS_MANUAL)               # ... and loses it after these
+BOOK_STAGES = (S.CALIBRATING, S.AWAITING_REVIEW, S.PROMOTING)   # a track gets its flag sheet here
+READ_STAGES = (S.CALIBRATING, S.AWAITING_REVIEW)                # ... which is read while in these
+DONE_STAGES = (S.DONE, S.SKIPPED, S.NEEDS_MANUAL)               # ... and saved to CSV after these
 ALARM_AFTER = 3
 REFANT_RE = re.compile(r"^ea\d\d(,ea\d\d)*$")
 FAKE_SA = "fake-controller@example.iam.gserviceaccount.com"
@@ -63,10 +75,13 @@ def _a1(tab, col, row):
 
 
 class Bridge:
-    def __init__(self, ctl, tracker=None, flagbook=None):
+    def __init__(self, ctl, tracker=None, flagbook=None, drive=None, books=None):
+        """tracker / flagbook (template workbook) / drive (flags folder) clients and books
+        (spreadsheet id -> client) are made from the config unless given (tests)."""
         self.ctl, self.cfg, self.r = ctl, ctl.cfg, ctl.r
         self.dir = ctl.r.path / "sheets"
-        self.tracker, self.flagbook = tracker, flagbook
+        self.tracker, self.flagbook, self.drive, self._mk = tracker, flagbook, drive, books
+        self.books: dict = {}
         self.spec = sheets.load_spec(sheets.SPEC, sheets_setup.project_values(self.cfg))
         self.fb = self.spec["flagbook"]
         self.tb = self.fb["table"]
@@ -81,14 +96,16 @@ class Bridge:
         self.drift: list = (read_json(self.dir / "status.json") or {}).get("drift") or []
 
     # ---- own files ----------------------------------------------------------------------------
+    def _ids(self):
+        sh = self.cfg.sheets
+        return {"tracker_id": sh.tracker_id, "flagbook_id": sh.flagbook_id, "flags_folder_id": sh.flags_folder_id}
+
     def _load(self):
         st = read_json(self.dir / "bridge.json") or {}
-        if (st.get("tracker_id"), st.get("flagbook_id")) != (self.cfg.sheets.tracker_id, self.cfg.sheets.flagbook_id):
-            st = {}                      # new spreadsheets: start over (rows, tabs, mirror)
-            self.mirror_reset = True
-        else:
-            self.mirror_reset = False
-        st.update(tracker_id=self.cfg.sheets.tracker_id, flagbook_id=self.cfg.sheets.flagbook_id)
+        self.mirror_reset = any(st.get(k) != v for k, v in self._ids().items())
+        if self.mirror_reset:
+            st = {}                      # other spreadsheets or folder: start over (rows, sheets, mirror)
+        st.update(self._ids())
         for key in ("rows", "tabs", "signups", "acks", "checks", "pending", "stamps"):
             st.setdefault(key, {})
         for t in self.spec["tracker"]["tabs"]:
@@ -105,15 +122,31 @@ class Bridge:
 
     # ---- clients and start-up ---------------------------------------------------------------------
     def _clients(self):
-        if self.tracker is not None:
-            return
         fake = os.environ.get("TM_FAKE_SHEETS_DIR")
-        if fake:                         # tests: a file-backed FakeSheets shared with the test process
-            from .fake_sheets import FileFakeSheets
-            mk = lambda sid: FileFakeSheets(Path(fake) / f"{sid}.pkl", spreadsheet_id=sid)
-        else:
-            mk = lambda sid: gsheets.SheetsClient(sid, credentials=self.cfg.sheets_key)
-        self.tracker, self.flagbook = mk(self.cfg.sheets.tracker_id), mk(self.cfg.sheets.flagbook_id)
+        sh = self.cfg.sheets
+        if self._mk is None:
+            if fake:                     # tests: file-backed fakes shared with the test process
+                from .fake_sheets import FileFakeSheets
+                self._mk = lambda sid: FileFakeSheets(Path(fake) / f"{sid}.pkl", spreadsheet_id=sid)
+            else:
+                self._mk = lambda sid: gsheets.SheetsClient(sid, credentials=self.cfg.sheets_key)
+        if self.drive is None:
+            if fake:
+                from .fake_sheets import FakeDrive
+                self.drive = FakeDrive(sh.flags_folder_id, directory=fake)
+            else:
+                self.drive = gsheets.DriveClient(sh.flags_folder_id, credentials=self.cfg.sheets_key)
+        if self.tracker is None:
+            self.tracker = self._mk(sh.tracker_id)
+        if self.flagbook is None:
+            self.flagbook = self._mk(sh.flagbook_id)
+
+    def book(self, eb):
+        """The client for a track's own flag spreadsheet."""
+        sid = self.state["tabs"][eb]["spreadsheet_id"]
+        if sid not in self.books:
+            self.books[sid] = self._mk(sid)
+        return self.books[sid]
 
     def _start(self):
         if self.started:
@@ -133,22 +166,23 @@ class Bridge:
         missing = [t["name"] for t in self.spec["tracker"]["tabs"] if t["name"] not in have]
         fm = self.flagbook.meta("sheets(properties(sheetId,title,hidden))")
         ftitles = {s["properties"]["title"]: s["properties"] for s in fm["sheets"]}
-        if self.fb["template_tab"] not in ftitles:
-            missing.append(f"flag book {self.fb['template_tab']}")
+        for t in (self.fb["template_tab"], "README"):
+            if t not in ftitles:
+                missing.append(f"template workbook {t}")
         if missing:
             raise gsheets.SheetsError(f"spreadsheet tabs missing ({', '.join(missing)}): run "
                                       "python -m trackmanager.init --project <project.yaml> --sheets")
+        folder = self.drive.folder()
+        if folder.get("trashed") or not (folder.get("capabilities") or {}).get("canAddChildren"):
+            raise gsheets.SheetsError(f"flags folder {self.cfg.sheets.flags_folder_id} is trashed or not "
+                                      "writable: share it with the service account as Editor")
         self.template_gid = ftitles[self.fb["template_tab"]]["sheetId"]
-        gids = {p["sheetId"]: t for t, p in ftitles.items()}
-        for eb, tab in self.state["tabs"].items():   # a tab deleted by hand: forget it
-            if not tab.get("dropped_at") and tab.get("gid") not in gids:
-                tab["dropped_at"] = iso()
-                self.ctl.event(eb, "sheets", "sheets", f"flag tab {tab['title']!r} is gone from the flag book")
+        self.readme_gid = ftitles["README"]["sheetId"]
         if not any(self.state["rows"].values()):
             self._rebuild_rows()
         self.started = True
         log(f"sheets bridge started: service account {self.sa}; tracker {self.cfg.sheets.tracker_id}, "
-            f"flag book {self.cfg.sheets.flagbook_id}")
+            f"template workbook {self.cfg.sheets.flagbook_id}, flags folder {self.cfg.sheets.flags_folder_id}")
 
     def _key(self, eb) -> str:
         rec = read_json(self.r.archive_json(eb)) or {}
@@ -194,8 +228,16 @@ class Bridge:
         return None
 
     # ---- ingest ---------------------------------------------------------------------------------
-    def live_tabs(self):
-        return {eb: t for eb, t in self.state["tabs"].items() if not t.get("hidden_at") and not t.get("dropped_at")}
+    def watched(self, states: dict | None = None) -> list[str]:
+        """Tracks whose flag sheet is read this cycle: calibrating (a verdict there is cleared; the
+        first run freezes its rows) or in review. Finished tracks' sheets stay editable but are only
+        read again after a reopen. `states` when the caller has them, else state/ on disk."""
+        out = []
+        for eb, t in self.state["tabs"].items():
+            st = (states or {}).get(eb) or read_json(self.r.state(eb)) or {}
+            if not t.get("missing") and st.get("stage") in READ_STAGES:
+                out.append(eb)
+        return out
 
     def ingest(self):
         self.read, self.clear_m1 = None, {}
@@ -203,13 +245,20 @@ class Bridge:
             self._start()
             su = sheets.tab(self.spec, "QA Sign-up")
             signup = self.tracker.values_get([gsheets.a1(su["name"])])[0]
-            live = self.live_tabs()
-            grids = self.flagbook.values_get(
-                [f"{gsheets.a1(t['title'])}!A1:T{self.tb['last_row']}" for t in live.values()]) if live else []
-            self.read = {"signup": signup, "tabs": dict(zip(live, grids))}
+            grids = {}
+            for eb in self.watched():
+                tab = self.state["tabs"][eb]
+                try:
+                    grids[eb] = self.book(eb).values_get([f"{gsheets.a1(tab['title'])}!A1:T{self.tb['last_row']}"])[0]
+                except gsheets.SheetsError as e:
+                    if e.status not in (400, 403, 404):
+                        raise
+                    tab["missing"] = f"{iso()}: {e}"   # deleted, unshared or renamed: say so, keep going
+                    self.ctl.event(eb, "sheets", "sheets", f"flag sheet {tab['title']!r} cannot be read: {e}")
+            self.read = {"signup": signup, "tabs": grids}
             self._signups(su, signup)
-            for eb in live:
-                self._verdict(eb, self.read["tabs"][eb])
+            for eb, grid in grids.items():
+                self._verdict(eb, grid)
             self._save()
         except Exception as e:
             self.read = None
@@ -245,10 +294,17 @@ class Bridge:
     def _table_rows(self, grid) -> list[dict]:
         names = [c["name"] for c in self.tb["columns"]]
         letters_ = [c["col"] for c in self.tb["columns"]]
-        rows = []
-        for r in range(self.tb["first_row"], self.tb["last_row"] + 1):
-            rows.append({n: _cell(grid, r, L) for n, L in zip(names, letters_)})
-        return rows
+        return [{n: _cell(grid, r, L) for n, L in zip(names, letters_)}
+                for r in range(self.tb["first_row"], self.tb["last_row"] + 1)]
+
+    def _refant(self, grid, arch) -> tuple[str, str]:
+        """(avoid-refant list, problem) from O1."""
+        refant = re.sub(r"\s+", "", _cell(grid, 1, "O"))
+        if refant and not REFANT_RE.match(refant):
+            return "", f"avoid-refant {refant!r}: use ea26 or ea26,ea10"
+        if refant and arch.get("antennas") and (bad := sorted(set(refant.split(",")) - set(arch["antennas"]))):
+            return "", f"avoid-refant {bad} not in this track"
+        return refant, ""
 
     def _verdict(self, eb, grid):
         raw = _cell(grid, 1, "M")
@@ -274,12 +330,7 @@ class Bridge:
         if action == "restart":
             arch = archive_ctx(self.r, st, self.ctl.spec(st))
             cmds, probs = flagcmds.build_commands(rows, arch, first_row=self.tb["first_row"])
-            refant = re.sub(r"\s+", "", _cell(grid, 1, "O"))
-            head = []
-            if refant and not REFANT_RE.match(refant):
-                head.append(f"avoid-refant {refant!r}: use ea26 or ea26,ea10")
-            elif refant and arch.get("antennas") and (bad := sorted(set(refant.split(",")) - set(arch["antennas"]))):
-                head.append(f"avoid-refant {bad} not in this track")
+            refant, head = self._refant(grid, arch)
             if probs or head:
                 checks = {}
                 for r, msg in probs:
@@ -287,9 +338,9 @@ class Bridge:
                 self.state["checks"][eb] = {r: "; ".join(m) for r, m in checks.items()}
                 where = sorted({r for r, _ in probs})
                 self.state["acks"][eb] = (f"RESTART not applied yet ({now_sheet()} UTC): "
-                                          + "; ".join(head + ([f"{len(probs)} problem(s) in row(s) "
-                                                              f"{', '.join(map(str, where))}; see the Check column"]
-                                                             if probs else []))
+                                          + "; ".join(([head] if head else []) + ([f"{len(probs)} problem(s) in row(s) "
+                                                                                    f"{', '.join(map(str, where))}; see the Check column"]
+                                                                                   if probs else []))
                                           + ". Fix them; the verdict is read again next cycle.")
                 return
             inputs["manual_flagging.txt"] = flagcmds.flag_file(arch["sdm"], arch["config"], cmds)
@@ -298,7 +349,7 @@ class Bridge:
             applied = [self.tb["first_row"] + i for i, row in enumerate(rows) if flagcmds._truthy(row.get("Apply Row"))]
         self.state["checks"][eb] = {}
         su = self.state["signups"].get(eb) or {}
-        d = {"eb": eb, "action": action, "iteration": n, "by": su.get("reviewer") or "flag book",
+        d = {"eb": eb, "action": action, "iteration": n, "by": su.get("reviewer") or "flag sheet",
              "ts": iso(), "notes": su.get("notes", ""), "source": "sheets", "verdict_word": word,
              **({"reviewer": su["reviewer"], "signed_up": su.get("signed_up")} if su.get("reviewer") else {})}
         if action == "restart":
@@ -308,37 +359,36 @@ class Bridge:
         self.state["pending"][eb] = {"file": name, "m1": raw, "verdict": word, "iteration": n, "rows": applied}
         log(f"sheets: {word} for {eb} iteration {n} from {d['by']} -> inbox/{name}")
 
-    # ---- iteration 1 ----------------------------------------------------------------------------
-    def first_run_inputs(self, st) -> str | None:
-        """Called by calibrate.submit before iteration 1's first attempt: freeze the ticked rows of the
-        track's tab (the project TEMPLATE's defaults plus anything added since) and its avoid-refant
-        cell into iter_1/inputs/. Returns None once frozen, or why the submission waits: the tab is
-        created at the end of the cycle the track is queued in, and read at the start of the next.
-        Ticked rows that fail the checks for this track are left out (shown in Check), not blocking:
-        a project-wide default may simply not apply to every track."""
-        eb = st["eb"]
+    # ---- inputs for a run that no verdict froze -------------------------------------------------------
+    def run_inputs(self, st) -> str | None:
+        """Called by calibrate.submit before the first attempt of an iteration whose inputs were not
+        frozen by a RESTART: iteration 1 (the project TEMPLATE's defaults plus anything added since)
+        or the run after a reopen (the rows the track ended with, plus edits). Freezes the sheet's
+        ticked rows and avoid-refant cell into iter_<n>/inputs/. Returns None once frozen, or why the
+        submission waits: a new sheet is made at the end of the cycle the track is queued in, and
+        read at the start of the next. Ticked rows that fail the checks for this track are left out
+        (shown in Check), not blocking: a project-wide default may not apply to every track."""
+        eb, n = st["eb"], st.get("iteration", 1)
         tab = self.state["tabs"].get(eb)
-        if not tab or tab.get("dropped_at"):
-            return "waiting one cycle for its flag tab (iteration 1 uses its ticked rows)"
+        if not tab:
+            return "waiting one cycle for its flag sheet (the run uses its ticked rows)"
+        if tab.get("missing"):
+            return f"its flag sheet cannot be read ({tab['missing']}); restore it, or have the operator check it"
         grid = (self.read or {}).get("tabs", {}).get(eb)
         if grid is None:
-            return ("waiting for the flag book: the sheets could not be read this cycle" if self.read is None
-                    else "waiting one cycle to read its new flag tab")
+            return ("waiting for the sheets: they could not be read this cycle" if self.read is None
+                    else "waiting one cycle to read its flag sheet")
         arch = archive_ctx(self.r, st, self.ctl.spec(st))
         rows = self._table_rows(grid)
         first = self.tb["first_row"]
         cmds, probs = flagcmds.build_commands(rows, arch, first_row=first)
         bad = {r for r, _ in probs}
         used = [first + i for i, row in enumerate(rows) if flagcmds._truthy(row.get("Apply Row")) and first + i not in bad]
-        refant, note = re.sub(r"\s+", "", _cell(grid, 1, "O")), ""
-        if refant and not REFANT_RE.match(refant):
-            note, refant = f"; avoid-refant {refant!r} ignored (use ea26 or ea26,ea10)", ""
-        elif refant and arch.get("antennas") and (gone := sorted(set(refant.split(",")) - set(arch["antennas"]))):
-            note, refant = f"; avoid-refant ignored: {gone} not in this track", ""
+        refant, why = self._refant(grid, arch)
         files = {"manual_flagging.txt": flagcmds.flag_file(arch["sdm"], arch["config"], cmds)}
         if refant:
             files["refant_ignore.txt"] = refant + "\n"
-        d = self.r.inputs(eb, 1)
+        d = self.r.inputs(eb, n)
         d.mkdir(parents=True, exist_ok=True)
         for name, text in files.items():
             tmp = d / f"partial-{name}"
@@ -346,14 +396,14 @@ class Bridge:
             os.replace(tmp, d / name)
         checks = {}
         for r, msg in probs:
-            checks.setdefault(str(r), []).append(f"not used in iteration 1: {msg}")
+            checks.setdefault(str(r), []).append(f"not used in iteration {n}: {msg}")
         self.state["checks"][eb] = {r: "; ".join(m) for r, m in checks.items()}
-        self.state["stamps"][eb] = {str(r): 1 for r in used}
-        self.state["acks"][eb] = (f"iteration 1 started {now_sheet()} UTC with {len(cmds)} ticked flag row(s)"
-                                  + (f"; {len(bad)} ticked row(s) left out, see the Check column" if bad else "")
-                                  + (f"; avoiding {refant} as refant" if refant else "") + note)
-        self.ctl.event(eb, st["stage"], st["stage"], self.state["acks"][eb].replace(f" {now_sheet()} UTC", "")
-                       + " (frozen in iter_1/inputs/)")
+        self.state["stamps"][eb] = {str(r): n for r in used}
+        text = (f"iteration {n} started with {len(cmds)} ticked flag row(s)"
+                + (f"; {len(bad)} ticked row(s) left out, see the Check column" if bad else "")
+                + (f"; avoiding {refant} as refant" if refant else "") + (f"; {why} (ignored)" if why else ""))
+        self.state["acks"][eb] = text.replace(" started ", f" started {now_sheet()} UTC ", 1)
+        self.ctl.event(eb, st["stage"], st["stage"], f"{text} (frozen in iter_{n}/inputs/)")
         self._save()
         return None
 
@@ -363,10 +413,10 @@ class Bridge:
         try:
             self._start()
             self._acknowledge()
-            self._tabs(states)
+            self._books(states)
             self._write(states)
             if self.cycles == 1 or self.cycles % self.cfg.sheets.protection_check_cycles == 0:
-                self._check_protection()
+                self._check_protection(states)
             self._ok()
         except Exception as e:
             self._fail("write", e)
@@ -377,11 +427,13 @@ class Bridge:
                 self._write_status(states)
 
     def _acknowledge(self):
-        stamps = []
-        for eb, rows in list(self.state["stamps"].items()):   # rows iteration 1 used: "Added in iter" 1
-            tab, grid = self.state["tabs"].get(eb), (self.read or {}).get("tabs", {}).get(eb)
-            if tab and not tab.get("dropped_at") and grid is not None:
-                stamps += [(_a1(tab["title"], "S", int(r)), [[n]]) for r, n in rows.items() if not _cell(grid, int(r), "S")]
+        writes: dict = {}                       # eb -> [(range, values)] in that track's sheet
+        grids = (self.read or {}).get("tabs", {})
+        for eb, rows in list(self.state["stamps"].items()):   # rows a run used: "Added in iter" n
+            tab, grid = self.state["tabs"].get(eb), grids.get(eb)
+            if tab and grid is not None:
+                writes.setdefault(eb, []).extend((_a1(tab["title"], "S", int(r)), [[n]])
+                                                 for r, n in rows.items() if not _cell(grid, int(r), "S"))
             self.state["stamps"].pop(eb)
         for eb, p in list(self.state["pending"].items()):
             done = read_json(self.r.inbox_archive / p["file"])
@@ -394,106 +446,91 @@ class Bridge:
             res = done.get("result", "")
             if res == "applied":
                 self.state["acks"][eb] = f"iteration {p['iteration']}: {p['verdict']} applied {now_sheet()} UTC"
-                tab = self.state["tabs"].get(eb)
-                grid = (self.read or {}).get("tabs", {}).get(eb)
+                tab, grid = self.state["tabs"].get(eb), grids.get(eb)
                 if p["verdict"] == "RESTART" and tab and grid is not None:
-                    for r in p["rows"]:              # rows a restart first used: "Added in iter"
-                        if not _cell(grid, r, "S"):
-                            stamps.append((_a1(tab["title"], "S", r), [[p["iteration"] + 1]]))
+                    writes.setdefault(eb, []).extend((_a1(tab["title"], "S", r), [[p["iteration"] + 1]])
+                                                     for r in p["rows"] if not _cell(grid, r, "S"))
             else:
                 self.state["acks"][eb] = f"{p['verdict']} not applied: {res}"
             self.clear_m1[eb] = p["m1"]
             self.state["pending"].pop(eb)
-        clear = {eb: v for eb, v in self.clear_m1.items() if self.state["tabs"].get(eb)
-                 and not self.state["tabs"][eb].get("dropped_at")}
-        if clear:     # re-read M1 just before clearing it: a reviewer's newer edit is never erased
-            now = self.flagbook.values_get([_a1(self.state["tabs"][eb]["title"], "M", 1) for eb in clear])
-            for (eb, v), grid in zip(clear.items(), now):
-                if _cell(grid, 1, "A") == v:
-                    stamps.append((_a1(self.state["tabs"][eb]["title"], "M", 1), [[""]]))
-        if stamps:
-            self.flagbook.values_update(stamps)
+        for eb, v in self.clear_m1.items():     # re-read M1 just before clearing it: a newer edit is kept
+            tab = self.state["tabs"].get(eb)
+            if tab and not tab.get("missing") and _cell(self.book(eb).values_get([_a1(tab["title"], "M", 1)])[0], 1, "A") == v:
+                writes.setdefault(eb, []).append((_a1(tab["title"], "M", 1), [[""]]))
+        for eb, data in writes.items():
+            if data:
+                self.book(eb).values_update(data)
         self.clear_m1 = {}
 
-    def _tab_url(self, tab):
-        return f"https://docs.google.com/spreadsheets/d/{self.cfg.sheets.flagbook_id}/edit#gid={tab['gid']}"
+    def _book_name(self, title):
+        return f"{self.cfg.name} flags {title}"
 
-    def _tabs(self, states):
+    def _books(self, states):
+        """A flag spreadsheet for each track that reaches calibration (copied from TEMPLATE), and a
+        CSV of a finished track's sheet. Nothing is hidden or deleted."""
         tabs = self.state["tabs"]
-        create = [eb for eb, st in states.items() if st["stage"] in TAB_STAGES and eb not in tabs]
-        hide = [eb for eb, st in states.items() if st["stage"] in DONE_STAGES and eb in tabs
-                and not tabs[eb].get("hidden_at") and not tabs[eb].get("dropped_at")]
-        keep_d = self.cfg.sheets.drop_done_tabs_after_d
-        drop = [eb for eb, t in tabs.items() if t.get("hidden_at") and not t.get("dropped_at")
-                and (age_s(t["hidden_at"]) or 0) >= keep_d * 86400]
-        if create:
-            meta = self.flagbook.meta("sheets(properties(sheetId,title))")
-            titles = {s["properties"]["title"]: s["properties"]["sheetId"] for s in meta["sheets"]}
-            reqs, new = [], []
-            used = {t["title"] for t in tabs.values() if not t.get("dropped_at")}
-            ids = {s["properties"]["sheetId"] for s in meta["sheets"]}
-            next_id = max([10_000] + [i for i in ids if i < 2_000_000_000]) + 1
-            for eb in create:
-                title = sheets.flag_tab_name(self.spec, archive_ctx(self.r, states[eb], self.ctl.spec(states[eb])))
-                if title in titles and title not in used:        # adopt a tab whose record was lost
-                    tabs[eb] = {"title": title, "gid": titles[title], "created": iso(), "adopted": True}
-                    continue
-                if title in used:
-                    title = f"{title}_{len(tabs)}"
-                while next_id in ids:
-                    next_id += 1
-                reqs += sheets.flag_tab_copy_requests(self.spec, self.template_gid, next_id, title,
-                                                      len(titles) + len(new))
-                new.append((eb, title, next_id))
-                ids.add(next_id)
-            if reqs:   # copy TEMPLATE, show the copy, empty its reviewer cells; then set its protection
-                self.flagbook.batch_update(reqs)
-                for eb, title, gid in new:
-                    tabs[eb] = {"title": title, "gid": gid, "created": iso()}
-                    self.ctl.event(eb, states[eb]["stage"], states[eb]["stage"], f"flag tab {title!r} created")
-                self._save()
-                self._protect_new([tabs[eb] for eb, _, _ in new])
-        reqs = []
-        for eb in hide:
-            self._export(eb)
-            reqs.append({"updateSheetProperties": {"properties": {"sheetId": tabs[eb]["gid"], "hidden": True},
-                                                   "fields": "hidden"}})
-        for eb in drop:
-            reqs.append({"deleteSheet": {"sheetId": tabs[eb]["gid"]}})
-        if reqs:
-            self.flagbook.batch_update(reqs)
-            for eb in hide:
-                tabs[eb]["hidden_at"] = iso()
-                self.ctl.event(eb, states[eb]["stage"], states[eb]["stage"],
-                               f"flag tab {tabs[eb]['title']!r} exported to tracks/{eb}/flag_tab.csv and hidden")
-            for eb in drop:
-                tabs[eb]["dropped_at"] = iso()
-                self.mirror = {k: v for k, v in self.mirror.items() if not k.startswith(f"F|{tabs[eb]['title']}|")}
-                self.ctl.event(eb, "sheets", "sheets", f"flag tab {tabs[eb]['title']!r} deleted "
-                               f"({keep_d:g} d after it was hidden; the CSV and frozen inputs/ remain)")
+        for eb, st in states.items():
+            if st["stage"] in BOOK_STAGES and eb not in tabs:
+                self._create_book(eb, st)
+        for eb, st in states.items():
+            t = tabs.get(eb)
+            if st["stage"] in DONE_STAGES and t and not t.get("missing") \
+                    and t.get("exported_for") != [st["stage"], st.get("iteration")]:
+                self._export(eb)
+                t["exported_for"] = [st["stage"], st.get("iteration")]
+                self.ctl.event(eb, st["stage"], st["stage"], f"flag sheet {t['title']!r} saved to "
+                               f"tracks/{eb}/flag_tab.csv (the sheet stays, readable and editable)")
 
-    def _protect_new(self, new_tabs):
-        """A copy of TEMPLATE carries TEMPLATE's full lock: replace it with the track-tab protection
-        (reviewer ranges editable)."""
-        meta = self.flagbook.meta("sheets(properties(sheetId,title),protectedRanges(protectedRangeId))")
-        by = {s["properties"]["sheetId"]: s for s in meta["sheets"]}
-        reqs = []
-        for t in new_tabs:
-            old = [p["protectedRangeId"] for p in by.get(t["gid"], {}).get("protectedRanges", [])]
-            reqs += sheets.flag_tab_protection_requests(self.spec, t["gid"], t["title"], old, self.editors)
-        if reqs:
-            self.flagbook.batch_update(reqs)
+    def _create_book(self, eb, st):
+        title = sheets.flag_tab_name(self.spec, archive_ctx(self.r, st, self.ctl.spec(st)))
+        props = {"trackmanager_project": self.cfg.name, "trackmanager_eb": eb}
+        found = self.drive.find(props)
+        if found:                               # a sheet whose record was lost: adopt it
+            sid = found[0]["id"]
+            client = self._mk(sid)
+            meta = client.meta("sheets(properties(sheetId,title))")
+            tab = next((s["properties"] for s in meta["sheets"] if s["properties"]["title"] == title),
+                       meta["sheets"][0]["properties"])
+            self.state["tabs"][eb] = {"spreadsheet_id": sid, "gid": tab["sheetId"], "title": tab["title"],
+                                      "created": iso(), "adopted": True}
+            self._save()
+            return
+        f = self.drive.create_spreadsheet(self._book_name(title), props)
+        sid = f["id"]
+        self.state["tabs"][eb] = {"spreadsheet_id": sid, "title": title, "created": iso(), "gid": None}
+        self._save()                            # recorded before anything else, so it is never made twice
+        client = self.book(eb)
+        tab = self.flagbook.copy_sheet_to(self.template_gid, sid)
+        readme = self.flagbook.copy_sheet_to(self.readme_gid, sid)
+        default = [s["properties"]["sheetId"] for s in client.meta("sheets(properties(sheetId,title))")["sheets"]
+                   if s["properties"]["sheetId"] not in (tab["sheetId"], readme["sheetId"])]
+        client.batch_update([
+            {"updateSpreadsheetProperties": {"properties": {"timeZone": sheets_setup.TIME_ZONE}, "fields": "timeZone"}},
+            {"updateSheetProperties": {"properties": {"sheetId": tab["sheetId"], "title": title, "hidden": False, "index": 0},
+                                       "fields": "title,hidden,index"}},
+            {"updateSheetProperties": {"properties": {"sheetId": readme["sheetId"], "title": "README", "hidden": False,
+                                                      "index": 1}, "fields": "title,hidden,index"}},
+            *({"deleteSheet": {"sheetId": g}} for g in default),
+            *sheets.flag_clear_requests(self.spec, tab["sheetId"]),
+            *sheets.flag_tab_protection_requests(self.spec, tab["sheetId"], title, [], self.editors),
+            sheets._protect(readme["sheetId"], "README", [], self.editors)])
+        self.state["tabs"][eb]["gid"] = tab["sheetId"]
+        self.ctl.event(eb, st["stage"], st["stage"], f"flag sheet {self._book_name(title)!r} created")
+        self._save()
 
     def _export(self, eb):
-        grid = (self.read or {}).get("tabs", {}).get(eb)
-        if grid is None:
-            grid = self.flagbook.values_get([f"{gsheets.a1(self.state['tabs'][eb]['title'])}!A1:T{self.tb['last_row']}"])[0]
+        tab = self.state["tabs"][eb]
+        grid = self.book(eb).values_get([f"{gsheets.a1(tab['title'])}!A1:T{self.tb['last_row']}"])[0]
         out = self.r.track(eb) / "flag_tab.csv"
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_name(".flag_tab.csv.tmp")
         with open(tmp, "w", newline="") as f:
             csv.writer(f).writerows(grid)
         tmp.replace(out)
+
+    def _url(self, tab):
+        return f"https://docs.google.com/spreadsheets/d/{tab['spreadsheet_id']}/edit#gid={tab['gid']}"
 
     # ---- cell writes ------------------------------------------------------------------------------
     @staticmethod
@@ -518,34 +555,37 @@ class Bridge:
     def _write(self, states):
         self._assign_rows(states)
         jobs = read_json(self.r.jobs_summary) or {}
-        want = {"T": {}, "F": {}}
+        want = {"T": {}}                         # "T" = tracker; else a track's spreadsheet id
         for eb, st in states.items():
             tab = self.state["tabs"].get(eb)
-            live_tab = tab and not tab.get("dropped_at")
+            ok = tab and tab.get("gid") is not None and not tab.get("missing")
             ctx = track_context(self.r, self.cfg, st, jobs, {
                 "signup": self.state["signups"].get(eb), "ack": self.state["acks"].get(eb, ""),
-                "tab_url": self._tab_url(tab) if live_tab else ""}, self.ctl.spec(st))
+                "tab_url": self._url(tab) if ok else ""}, self.ctl.spec(st))
             for t in self.spec["tracker"]["tabs"]:
                 row = self.state["rows"][t["name"]][eb]
                 lm = sheets.letters(t["columns"])
-                plain = {c["name"] for c in t["columns"] if c["source"] not in ("formula",) and not c.get("link_text")}
+                plain = {c["name"] for c in t["columns"] if c["source"] != "formula" and not c.get("link_text")}
                 for name, v in sheets.tracker_row(t, ctx, row, existing={}).items():
                     want["T"][f"{t['name']}|{lm[name]}{row}"] = self._text(v) if name in plain else v
-            if live_tab:
-                for a1, v in sheets.flag_tab_cells(self.spec, ctx).items():
-                    want["F"][f"{tab['title']}|{a1}"] = self._text(v)
-                # Check column: a row's problems, or "" where the cell still shows an old message
-                grid = (self.read or {}).get("tabs", {}).get(eb)
-                for r in range(self.tb["first_row"], self.tb["last_row"] + 1):
-                    msg = (self.state["checks"].get(eb) or {}).get(str(r), "")
-                    key = f"{tab['title']}|T{r}"
-                    if msg or self.mirror.get(f"F|{key}") or (grid is not None and _cell(grid, r, "T")):
-                        want["F"][key] = msg
-        for which, client in (("T", self.tracker), ("F", self.flagbook)):
-            changed = {k: v for k, v in want[which].items()
+            if not ok:
+                continue
+            w = want.setdefault(tab["spreadsheet_id"], {})
+            for a1, v in sheets.flag_tab_cells(self.spec, ctx).items():
+                w[f"{tab['title']}|{a1}"] = self._text(v)
+            # Check column: a row's problems, or "" where the cell still shows an old message
+            grid = (self.read or {}).get("tabs", {}).get(eb)
+            for r in range(self.tb["first_row"], self.tb["last_row"] + 1):
+                msg = (self.state["checks"].get(eb) or {}).get(str(r), "")
+                key = f"{tab['title']}|T{r}"
+                if msg or self.mirror.get(f"{tab['spreadsheet_id']}|{key}") or (grid is not None and _cell(grid, r, "T")):
+                    w[key] = msg
+        for which, cells in want.items():
+            changed = {k: v for k, v in cells.items()
                        if f"{which}|{k}" not in self.mirror or self.mirror[f"{which}|{k}"] != v}
             if not changed:
                 continue
+            client = self.tracker if which == "T" else self.books.get(which) or self._mk(which)
             client.values_update(self._runs(changed))
             self.mirror.update({f"{which}|{k}": v for k, v in changed.items()})
 
@@ -569,27 +609,28 @@ class Bridge:
         return out
 
     # ---- protection drift --------------------------------------------------------------------------
-    def _check_protection(self):
+    def _check_protection(self, states):
         fields = "sheets(properties(sheetId,title,hidden),protectedRanges(range,editors,warningOnly,unprotectedRanges))"
         probs = sheets_setup.check(self.spec, self.tracker.meta(fields), "tracker", self.editors)
-        fmeta = self.flagbook.meta(fields)
-        probs += sheets_setup.check(self.spec, fmeta, "flagbook", self.editors)
-        by_gid = {s["properties"]["sheetId"]: s for s in fmeta["sheets"]}
-        for eb, t in self.state["tabs"].items():
-            if t.get("dropped_at"):
-                continue
-            if t["gid"] not in by_gid:
-                probs.append(f"flagbook/{t['title']}: the flag tab of {eb} is missing")
-                continue
-            probs += sheets_setup.check_tab(by_gid[t["gid"]], f"flagbook/{t['title']}",
-                                            self.fb["protection"]["editable_ranges"], self.editors)
+        probs += sheets_setup.check(self.spec, self.flagbook.meta(fields), "flagbook", self.editors)
         tmpl = self.fb["template_tab"]       # a verdict typed into TEMPLATE is never read or copied: say so
         typed = sheets.template_input(self.spec, self.flagbook.values_get(
             [f"{gsheets.a1(tmpl)}!A1:T{self.tb['last_row']}"])[0])
         if typed:
             probs.append(f"flagbook/{tmpl}: has input in {', '.join(typed[:6])}{' ...' if len(typed) > 6 else ''}"
-                         " (verdict, avoid-refant or bridge cells); it is never read or copied to a track's tab. "
+                         " (verdict, avoid-refant or bridge cells); it is never read or copied to a track's sheet. "
                          "Run init --sheets with the controller stopped to clear it")
+        for eb in self.watched(states):      # the sheets reviewers are working in now
+            t = self.state["tabs"][eb]
+            meta = self.book(eb).meta(fields)
+            sh = next((s for s in meta["sheets"] if s["properties"]["sheetId"] == t["gid"]), None)
+            if sh is None:
+                probs.append(f"{self._book_name(t['title'])}: its flag tab is missing")
+                continue
+            probs += sheets_setup.check_tab(sh, self._book_name(t["title"]),
+                                            self.fb["protection"]["editable_ranges"], self.editors)
+        probs += [f"{self._book_name(t['title'])}: cannot be read ({t['missing']})"
+                  for t in self.state["tabs"].values() if t.get("missing")]
         if probs != self.drift:
             for p in sorted(set(probs) - set(self.drift)):
                 self.ctl.event("-", "sheets", "sheets", f"protection drift: {p}")
@@ -622,14 +663,17 @@ class Bridge:
                             "detail": f"{st['hold_reason'].replace('_', ' ')} from {su.get('reviewer') or 'the reviewer'}"})
             if self.state["checks"].get(eb):
                 out.append({"eb": eb, "item": "flag_rows_have_problems", "detail": self.state["acks"].get(eb, "")})
+            t = self.state["tabs"].get(eb)
+            if t and t.get("missing"):
+                out.append({"eb": eb, "item": "flag_sheet_missing", "detail": t["missing"]})
         return out
 
     def _write_status(self, states):
         status = {"ts": iso(), "service_account": self.sa, "health": self.health, "drift": self.drift,
                   "alarm": self.alarm(), "needs_you": self.needs_you(states),
                   "tracker_id": self.cfg.sheets.tracker_id, "flagbook_id": self.cfg.sheets.flagbook_id,
-                  "flag_tabs": sum(1 for t in self.state["tabs"].values() if not t.get("dropped_at")),
-                  "pending_verdicts": sorted(self.state["pending"])}
+                  "flags_folder_id": self.cfg.sheets.flags_folder_id,
+                  "flag_sheets": len(self.state["tabs"]), "pending_verdicts": sorted(self.state["pending"])}
         self.dir.mkdir(parents=True, exist_ok=True)
         write_json(self.dir / "status.json", status)
         return status

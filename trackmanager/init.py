@@ -101,9 +101,10 @@ def text(rep: dict) -> str:
     return "\n".join(out)
 
 
-def sheets_step(cfg, root: Root, make_client=None) -> tuple[list[str], int]:
-    """Build/check both spreadsheets. Returns (report lines, exit code). make_client(id) -> client
-    (tests pass FakeSheets; default gsheets.SheetsClient with the project's key)."""
+def sheets_step(cfg, root: Root, make_client=None, drive=None) -> tuple[list[str], int]:
+    """Build/check the tracker and the template workbook, and check the flags folder. Returns
+    (report lines, exit code). make_client(id) -> client and drive (tests pass fakes; default
+    gsheets.SheetsClient / DriveClient with the project's key)."""
     from . import gsheets, sheets_setup
     if not cfg.sheets.enabled:
         return ["sheets: sheets.enabled is false in project.yaml; nothing to build"], 2
@@ -116,26 +117,40 @@ def sheets_step(cfg, root: Root, make_client=None) -> tuple[list[str], int]:
     except gsheets.KeyFileError as e:
         return [f"sheets: {e}"], 2
     out, code, reports = [f"sheets: service account {sa}"], 0, []
-    for which, sid in (("tracker", cfg.sheets.tracker_id), ("flagbook", cfg.sheets.flagbook_id)):
+    for which, label, sid in (("tracker", "tracker", cfg.sheets.tracker_id),
+                              ("flagbook", "template workbook", cfg.sheets.flagbook_id)):
         client = make_client(sid) if make_client else gsheets.SheetsClient(sid, credentials=cfg.sheets_key)
         try:
             rep = sheets_setup.build(cfg, client, which, sa)
         except gsheets.SheetsError as e:
             hint = (" (is the spreadsheet shared with the service account as Editor?)"
                     if e.status in (403, 404) else "")
-            out.append(f"  {which} {sid}: FAILED: {e}{hint}")
+            out.append(f"  {label} {sid}: FAILED: {e}{hint}")
             code = 2
             continue
         reports.append(rep)
-        out.append(f"  {which} {sid}: created {rep['created'] or 'nothing'}; existing {rep['existing'] or 'none'}"
+        out.append(f"  {label} {sid}: created {rep['created'] or 'nothing'}; existing {rep['existing'] or 'none'}"
                    + (f"; deleted {rep['deleted']}" if rep["deleted"] else "")
                    + (f"; TEMPLATE repaired: {'; '.join(rep['repaired'])}" if rep.get("repaired") else ""))
         out += [f"    PROBLEM: {p}" for p in rep["problems"]]
         code = code or (1 if rep["problems"] else 0)
+    folder_id = cfg.sheets.flags_folder_id
+    try:
+        f = (drive or gsheets.DriveClient(folder_id, credentials=cfg.sheets_key)).folder()
+        ok = not f.get("trashed") and (f.get("capabilities") or {}).get("canAddChildren")
+        out.append(f"  flags folder {folder_id} ({f.get('name')!r}): "
+                   + ("writable; one flag spreadsheet per track is created here" if ok
+                      else "NOT writable: share it with the service account as Editor"))
+        code = code or (0 if ok else 2)
+    except gsheets.SheetsError as e:
+        out.append(f"  flags folder {folder_id}: FAILED: {e}"
+                   + (" (is it shared with the service account as Editor?)" if e.status in (403, 404) else ""))
+        code = 2
     if reports:
         out.append("  protected-range editors: " + ", ".join(reports[0]["editors"]))
-        out.append("  share by hand: reviewers as Editor on both spreadsheets (they can edit only the "
-                   "sign-up cells and the flag rows/verdict cells); keep the service account as Editor")
+        out.append("  share by hand, as Editor: the tracker and the flags folder with the reviewers (protection "
+                   "limits them to the sign-up cells and the flag rows/verdict cells); all three with the "
+                   "service account. The template workbook needs only the operators.")
     stamp = now().strftime("%Y%m%dT%H%M%SZ")
     (root.path / "reports").mkdir(parents=True, exist_ok=True)
     write_json(root.path / "reports" / f"sheets-{stamp}.json", {"generated": iso(), "service_account": sa,

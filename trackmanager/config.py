@@ -136,11 +136,11 @@ class ReviewCfg:
 class SheetsCfg:                        # used from M4 on (plan §3.5)
     enabled: bool = False
     tracker_id: str | None = None       # spreadsheet ids (the part of the URL after /d/)
-    flagbook_id: str | None = None
+    flagbook_id: str | None = None      # the template workbook: README + the project's flag TEMPLATE
+    flags_folder_id: str | None = None  # Drive folder holding one flag spreadsheet per track
     credentials: str | None = None      # service-account JSON key, mode 600
     editors: list | None = None         # human editors of protected ranges; unset = sheets.DEFAULT_EDITORS
     links: dict = _d()                  # qa_guide, flag_rows_help (URLs shown in the sheets and emails)
-    drop_done_tabs_after_d: float = 14  # a DONE track's flag tab is exported, hidden, then deleted after this
     protection_check_cycles: int = 12   # read the protections back every N cycles (and at start)
 
 
@@ -358,7 +358,7 @@ class ProjectConfig:
              "controller.max_sessions must be an integer >= 0")
         sh = self.sheets
         if sh.enabled:
-            for key in ("tracker_id", "flagbook_id", "credentials"):
+            for key in ("tracker_id", "flagbook_id", "flags_folder_id", "credentials"):
                 need(getattr(sh, key), f"sheets.{key} is required when sheets.enabled is true")
             need(not (sh.tracker_id and sh.tracker_id == sh.flagbook_id),
                  "sheets.tracker_id and sheets.flagbook_id must be different spreadsheets")
@@ -368,8 +368,7 @@ class ProjectConfig:
                                     and all(isinstance(e, str) and re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", e)
                                             for e in sh.editors)),
              "sheets.editors must be a list of email addresses")
-        need(sh.drop_done_tabs_after_d >= 0 and sh.protection_check_cycles >= 1,
-             "sheets.drop_done_tabs_after_d must be >= 0 and sheets.protection_check_cycles >= 1")
+        need(sh.protection_check_cycles >= 1, "sheets.protection_check_cycles must be >= 1")
         seen = set()
         for t in self.tracks:
             need(isinstance(t, TrackCfg) and EB_NAME.fullmatch(t.eb or ""), f"tracks: invalid EB name {t!r}")

@@ -51,17 +51,19 @@ def held_gb(st: dict, size: float | None, factor: float, started: bool = False) 
     stage, activity = _phase(st)
     n = st.get("iteration", 1) or 1
     earlier = PRODUCTS_FACTOR * max(n - 1, 0)
+    # a reopened track (reopen.py) keeps each earlier promotion's splits aside (<EB>.superseded-*)
+    kept = size * SPLIT_FACTOR * len(st.get("reopened") or [])
     if stage == S.STAGING:
-        return size if (activity == S.RUNNING or started) else 0.0
+        return (size if (activity == S.RUNNING or started) else 0.0) + size * earlier + kept
     if stage == S.CALIBRATING:
         if activity in (S.RUNNING, S.PUBLISHING) or started:
-            return size * (factor + earlier)
-        return size * (1 + earlier)
+            return size * (factor + earlier) + kept
+        return size * (1 + earlier) + kept
     if stage in (S.AWAITING_REVIEW, S.PROMOTING):
-        return size * (1 + SPLIT_FACTOR + PRODUCTS_FACTOR * n)
+        return size * (1 + SPLIT_FACTOR + PRODUCTS_FACTOR * n) + kept
     if stage == S.DONE:
         n = st.get("completed_iteration") or n
-        return size * (SPLIT_FACTOR + PRODUCTS_FACTOR * n)
+        return size * (SPLIT_FACTOR + PRODUCTS_FACTOR * n) + kept
     return 0.0
 
 

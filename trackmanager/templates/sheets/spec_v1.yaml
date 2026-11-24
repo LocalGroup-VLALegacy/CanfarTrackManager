@@ -139,7 +139,7 @@ tracker:
       protection: {mode: whole_tab, editable_columns: [QA Reviewer, Email, Notes]}
 
 flagbook:
-  title: "${project.name} Flags"
+  title: "${project.name} flag template"
   tab_name: "{config}_{project}_{mjd}_{ebid}"      # e.g. D_20A-346_59786_42455346
   template_tab: TEMPLATE                            # the project's flag template: built from this spec, then
                                                     # copied for each track when it first calibrates. Operators
@@ -152,8 +152,9 @@ flagbook:
   extra_tabs:
     - name: README
       text: |
-        One tab per track. Add one row per issue, tick "Apply Row", then set the verdict in M1.
-        A new tab starts with the project's default flag rows; the ticked ones were used from the
+        Each track has its own flag spreadsheet in the project's flags folder; the tracker links to it.
+        Add one row per issue, tick "Apply Row", then set the verdict in M1.
+        A new sheet starts with the project's default flag rows; the ticked ones were used from the
         first run (their "Added in iter" is 1). Untick a row to drop it from the next run.
         RESTART runs the pipeline again with EVERY ticked row (rows from earlier iterations included;
         untick a row to drop that flag); COMPLETE accepts the track. MANUAL REVIEW and HELP REQUESTED
@@ -161,6 +162,8 @@ flagbook:
         Field names must match the track's fields (dropdown) or be a wildcard such as IC10*.
         Errors found when your verdict is read appear in M2 and in the "Check" column; the verdict
         is not used until they are fixed.
+        The sheet stays after the track is complete. If a track was completed by mistake, ask the
+        operator to reopen it: the data is staged again and the next run uses this sheet's ticked rows.
   header_cells:                                     # label cell -> value cell, source
     - {label: A1, text: "Scheduling Block",   value: E1, source: archive.sdm}
     - {label: A2, text: "Observation Date",   value: E2, source: archive.date}

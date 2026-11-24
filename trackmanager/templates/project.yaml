@@ -67,11 +67,11 @@ review:
 sheets:                                     # Google tracker + flag book (M4; setup: docs/sheets_setup.md)
   enabled: false
   tracker_id: null                          # spreadsheet ids: the part of the URL between /d/ and /edit
-  flagbook_id: null
+  flagbook_id: null                         # template workbook (README + the project's flag TEMPLATE)
+  flags_folder_id: null                     # Drive folder (shared with the service account) for one flag spreadsheet per track
   credentials: secrets/gsheets.json         # service-account JSON key; must be mode 600
   editors: [koch.eric.w@gmail.com]          # humans who may edit protected ranges (the service account is added)
   links: {qa_guide: <url>, flag_rows_help: <url>}
-  drop_done_tabs_after_d: 14                # DONE flag tabs: exported to tracks/<EB>/flag_tab.csv, hidden, deleted after this
   protection_check_cycles: 12               # read protections back every N cycles; drift raises an alarm
 
 controller:

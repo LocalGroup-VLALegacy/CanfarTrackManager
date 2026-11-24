@@ -26,9 +26,12 @@ def test_every_stage_is_reachable_from_discovered():
     assert seen == set(S.STAGES)
 
 
-def test_terminal_stages_have_no_out_edges():
+def test_terminal_stages_have_no_out_edges_except_the_operators_reopen():
     assert S.TERMINAL == {S.DONE, S.NEEDS_MANUAL, S.SKIPPED}
-    assert all(not S.TRANSITIONS[s] for s in S.TERMINAL)
+    assert not S.TRANSITIONS[S.NEEDS_MANUAL] and not S.TRANSITIONS[S.SKIPPED]
+    # DONE: only `reopen` (2026-11-24), an operator action; the controller never leaves DONE itself
+    assert set(S.TRANSITIONS[S.DONE]) == {S.STAGING, S.CALIBRATING, S.AWAITING_DATA}
+    assert all(e.actor == S.OPERATOR for e in S.TRANSITIONS[S.DONE].values())
     assert all(S.TRANSITIONS[s] for s in set(S.STAGES) - S.TERMINAL)
 
 
@@ -60,10 +63,12 @@ def test_failable_stages_are_the_working_stages():
 
 
 def test_pending_edges_are_exactly_the_ones_without_a_handler_yet():
-    """M3 wrote stage_local, so STAGING and its retry edge have handlers. Only the edges out of
-    AWAITING_DATA (the pasted link and the skip) wait for M6."""
+    """M3 wrote stage_local, so STAGING and its retry edge have handlers. The edges out of
+    AWAITING_DATA (the pasted link and the skip) wait for M6, and so does reopening an nrao_link
+    track (it can only reach DONE once fetch_raw exists)."""
     pending = {(f, t): e.pending for f, t, e in S.edges() if e.pending}
-    assert pending == {(S.AWAITING_DATA, S.STAGING): "M6", (S.AWAITING_DATA, S.SKIPPED): "M6"}
+    assert pending == {(S.AWAITING_DATA, S.STAGING): "M6", (S.AWAITING_DATA, S.SKIPPED): "M6",
+                       (S.DONE, S.AWAITING_DATA): "M6"}
     for frm, to, e in S.edges():
         if S.DISCOVERED in (frm, to) or S.STAGING in (frm, to) and frm != S.AWAITING_DATA:
             assert not e.pending, (frm, to)

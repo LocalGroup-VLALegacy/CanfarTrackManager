@@ -98,7 +98,12 @@ TRANSITIONS: dict[str, dict[str, Edge]] = {
         SKIPPED: _e(OPERATOR, "skip or abort"),
         NEEDS_MANUAL: _e(OPERATOR, "something outside the workflow has to happen"),
     },
-    DONE: {},
+    DONE: {
+        # operator `reopen` (reopen.py), e.g. after a COMPLETE set by mistake: iteration + 1
+        STAGING: _e(OPERATOR, "reopen: raw data deleted at DONE, staged again from /arc"),
+        CALIBRATING: _e(OPERATOR, "reopen: raw data still on disk, or no input to stage"),
+        AWAITING_DATA: _e(OPERATOR, "reopen: nrao_link source, data requested again", "M6"),
+    },
     NEEDS_MANUAL: {},
     SKIPPED: {},
 }
