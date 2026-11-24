@@ -85,8 +85,14 @@ def test_tracker_row_never_overwrites_reviewer_cells(spec):
 def test_flag_template_requests(spec):
     reqs = sheets.flag_template_requests(spec, 5, EDITORS)
     prot = [r["addProtectedRange"]["protectedRange"] for r in reqs if "addProtectedRange" in r][0]
+    assert prot["unprotectedRanges"] == []                      # TEMPLATE itself is fully locked ...
+    assert reqs[0]["updateSheetProperties"]["properties"]["hidden"] is True   # ... and hidden
+    copy = sheets.flag_tab_protection_requests(spec, 77, "D_x", [5, 6], EDITORS)   # ... each copy gets the ranges
+    assert copy[:2] == [{"deleteProtectedRange": {"protectedRangeId": 5}}, {"deleteProtectedRange": {"protectedRangeId": 6}}]
+    prot = copy[2]["addProtectedRange"]["protectedRange"]
     un = {(u["startRowIndex"], u["endRowIndex"], u["startColumnIndex"], u["endColumnIndex"]) for u in prot["unprotectedRanges"]}
     assert un == {(6, 150, 3, 15), (0, 1, 12, 13), (0, 1, 14, 15)}  # D7:O150, M1, O1
+    assert prot["range"] == {"sheetId": 77}
     verdict = [r["setDataValidation"] for r in reqs if "setDataValidation" in r
                and r["setDataValidation"]["range"]["startColumnIndex"] == 12 and r["setDataValidation"]["range"]["startRowIndex"] == 0]
     assert [v["userEnteredValue"] for v in verdict[0]["rule"]["condition"]["values"]] == \

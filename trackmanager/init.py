@@ -128,7 +128,8 @@ def sheets_step(cfg, root: Root, make_client=None) -> tuple[list[str], int]:
             continue
         reports.append(rep)
         out.append(f"  {which} {sid}: created {rep['created'] or 'nothing'}; existing {rep['existing'] or 'none'}"
-                   + (f"; deleted {rep['deleted']}" if rep["deleted"] else ""))
+                   + (f"; deleted {rep['deleted']}" if rep["deleted"] else "")
+                   + (f"; TEMPLATE repaired: {'; '.join(rep['repaired'])}" if rep.get("repaired") else ""))
         out += [f"    PROBLEM: {p}" for p in rep["problems"]]
         code = code or (1 if rep["problems"] else 0)
     if reports:

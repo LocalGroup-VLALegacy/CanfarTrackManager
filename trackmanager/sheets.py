@@ -300,10 +300,10 @@ def flag_template_requests(spec: dict, sheet_id: int, editors: list[str]) -> lis
     fb, tb = spec["flagbook"], spec["flagbook"]["table"]
     cols = tb["columns"]
     reqs = [{"updateSheetProperties": {"properties": {
-        "sheetId": sheet_id, "title": fb["template_tab"],
+        "sheetId": sheet_id, "title": fb["template_tab"], "hidden": True,
         "gridProperties": {"frozenRowCount": tb["header_row"], "columnCount": 26,
                            "rowCount": max(tb["last_row"], int(re.search(r"(\d+)$", tb["hidden_range"]).group(1))) + 10}},
-        "fields": "title,gridProperties(frozenRowCount,rowCount,columnCount)"}}]
+        "fields": "title,hidden,gridProperties(frozenRowCount,rowCount,columnCount)"}}]
     cells = {}
     for h in fb["header_cells"]:
         if "label" in h:
@@ -356,8 +356,55 @@ def flag_template_requests(spec: dict, sheet_id: int, editors: list[str]) -> lis
             "ranges": [_grid(sheet_id, cf["range"])],
             "booleanRule": {"condition": {"type": "CUSTOM_FORMULA", "values": [{"userEnteredValue": cf["formula"]}]},
                             "format": {"backgroundColor": _rgb(cf["color"])}}}}})
-    reqs.append(_protect(sheet_id, fb["template_tab"], fb["protection"]["editable_ranges"], editors))
+    reqs.append(_protect(sheet_id, fb["template_tab"], [], editors))   # fully locked; copies get the reviewer ranges
     return reqs
+
+
+def flag_clear_requests(spec: dict, sheet_id: int) -> list[dict]:
+    """Empty every reviewer cell (and the bridge's Added in iter / Check cells) of a flag tab;
+    the Apply Row checkboxes go back to FALSE. Formulas and header cells are untouched."""
+    fb = spec["flagbook"]
+    bools = {c["col"] for c in fb["table"]["columns"] if c.get("validation", {}).get("type") == "BOOLEAN"}
+    reqs = []
+    for a1 in fb["protection"]["editable_ranges"] + fb["protection"].get("bridge_ranges", []):
+        g = _grid(sheet_id, a1)
+        row = [{"userEnteredValue": {"boolValue": False}} if col_letter(c) in bools else {}
+               for c in range(g["startColumnIndex"], g["endColumnIndex"])]
+        reqs.append({"updateCells": {"start": {"sheetId": sheet_id, "rowIndex": g["startRowIndex"],
+                                               "columnIndex": g["startColumnIndex"]},
+                                     "rows": [{"values": row} for _ in range(g["startRowIndex"], g["endRowIndex"])],
+                                     "fields": "userEnteredValue"}})
+    return reqs
+
+
+def flag_tab_copy_requests(spec: dict, template_id: int, new_id: int, title: str, index: int) -> list[dict]:
+    """A track's flag tab: copy TEMPLATE, show it, and start from empty reviewer cells. Its protection
+    is set afterwards (flag_tab_protection_requests), once the copied one's id is known."""
+    return [{"duplicateSheet": {"sourceSheetId": template_id, "newSheetId": new_id, "newSheetName": title,
+                                "insertSheetIndex": index}},
+            {"updateSheetProperties": {"properties": {"sheetId": new_id, "hidden": False}, "fields": "hidden"}},
+            *flag_clear_requests(spec, new_id)]
+
+
+def flag_tab_protection_requests(spec: dict, sheet_id: int, title: str, protected_range_ids, editors) -> list[dict]:
+    """Replace whatever protection a tab carries with the track-tab one (reviewer ranges editable)."""
+    return [*({"deleteProtectedRange": {"protectedRangeId": pid}} for pid in protected_range_ids),
+            _protect(sheet_id, title, spec["flagbook"]["protection"]["editable_ranges"], editors)]
+
+
+def reviewer_input(spec: dict, grid) -> list[str]:
+    """A1 cells holding input in a values_get grid of a flag tab's A1:T<last_row> (checkboxes that
+    are FALSE do not count). Used to spot a TEMPLATE that someone typed into."""
+    fb = spec["flagbook"]
+    out = []
+    for a1 in fb["protection"]["editable_ranges"]:
+        g = _grid(0, a1)
+        for r in range(g["startRowIndex"], g["endRowIndex"]):
+            for c in range(g["startColumnIndex"], g["endColumnIndex"]):
+                v = grid[r][c] if r < len(grid) and c < len(grid[r]) else ""
+                if v not in ("", None, False) and str(v).upper() != "FALSE":
+                    out.append(f"{col_letter(c)}{r + 1}")
+    return out
 
 
 # ---- local preview ----------------------------------------------------------------------------

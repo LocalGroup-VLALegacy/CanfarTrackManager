@@ -139,10 +139,10 @@ def test_build_creates_managed_tabs_and_checks_clean(cfg):
         assert f.sheet("_meta")["properties"]["hidden"] is True
         assert rep["editors"] == [SA, "koch.eric.w@gmail.com"]
         assert f.get_value("_meta", "B2") == 1 and f.get_value("_meta", "B4") == SA
-        before = f.calls
+        before, writes = f.calls, len(f.log)
         again = sheets_setup.build(cfg, f, which, SA)      # rerun: nothing to do, nothing sent
         assert again["created"] == [] and again["existing"] == titles and again["problems"] == []
-        assert f.calls - before == 2                         # two metadata reads, no writes
+        assert len(f.log) == writes and f.calls - before <= 4  # reads only (metadata; TEMPLATE check)
 
 
 def test_build_tracker_headers_hidden_url_columns_and_formulas(cfg):
@@ -189,13 +189,15 @@ def test_check_reports_protection_drift(cfg):
     spec = sheets.load_spec(sheets.SPEC, sheets_setup.project_values(cfg))
     tmpl = f.sheet("TEMPLATE")["protectedRanges"][0]
     tmpl["editors"]["users"].append("intruder@example.org")
-    tmpl["unprotectedRanges"] = tmpl["unprotectedRanges"][:1]
+    tmpl["unprotectedRanges"] = [sheets._grid(202, "M1")]           # someone opened M1 for editing
+    f.sheet("TEMPLATE")["properties"]["hidden"] = False
     pr = f.sheet("README")["protectedRanges"][0]["protectedRangeId"]
     f.batch_update([{"deleteProtectedRange": {"protectedRangeId": pr}}])
     probs = sheets_setup.check(spec, f.meta(), "flagbook", rep["editors"])
     assert any("README: expected one whole-tab protection, found 0" in p for p in probs)
     assert any("extra editors ['intruder@example.org']" in p for p in probs)
     assert any("TEMPLATE: unprotected ranges differ" in p for p in probs)
+    assert any("TEMPLATE: should be hidden" in p for p in probs)
     f.batch_update([{"deleteSheet": {"sheetId": f.sheet("_meta")["properties"]["sheetId"]}}])
     assert any("tab '_meta' is missing" in p for p in sheets_setup.check(spec, f.meta(), "flagbook", rep["editors"]))
 
@@ -237,3 +239,23 @@ def test_init_sheets_step(tmp_path, cfg):
     write_json(root.lease, {"holder": "abc", "heartbeat": iso(), "released": False})
     lines, code = init.sheets_step(cfg, root, make_client=fakes.__getitem__)
     assert code == 2 and "holds the lease" in lines[0]
+
+
+def test_init_repairs_a_template_that_was_typed_into_and_unlocked(cfg):
+    """2026-11-24, live: a reviewer typed a flag row and RESTART into TEMPLATE (then visible, with
+    reviewer-editable cells). Rerunning the build hides it, locks it and clears the input."""
+    f = FakeSheets()
+    sheets_setup.build(cfg, f, "flagbook", SA)
+    sh = f.sheet("TEMPLATE")
+    sh["properties"]["hidden"] = False
+    sh["protectedRanges"][0]["unprotectedRanges"] = [sheets._grid(202, a) for a in ("D7:O150", "M1", "O1")]
+    for a1, v in (("M1", "RESTART"), ("D7", True), ("E7", "TEST"), ("F7", "IC10*"), ("H7", 2)):
+        f.set_value("TEMPLATE", a1, v)
+    rep = sheets_setup.build(cfg, f, "flagbook", SA)
+    assert rep["problems"] == [] and len(rep["repaired"]) == 3, rep
+    assert "M1" in rep["repaired"][2] and "E7" in rep["repaired"][2]
+    assert f.sheet("TEMPLATE")["properties"]["hidden"] is True
+    assert f.get_value("TEMPLATE", "M1") is None and f.get_value("TEMPLATE", "E7") is None
+    assert f.get_value("TEMPLATE", "D7") is False                   # checkbox back to unticked
+    assert f.get_value("TEMPLATE", "R7").startswith("=IF(")         # formulas kept
+    assert sheets_setup.build(cfg, f, "flagbook", SA)["repaired"] == []   # nothing left to repair

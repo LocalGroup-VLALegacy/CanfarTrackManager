@@ -52,7 +52,7 @@ def expected_tabs(spec, which: str, editors: list[str]) -> dict:
     return {"README": (SHEET_IDS[which]["README"], lambda sid: _readme_requests(sid, readme, editors), []),
             fb["template_tab"]: (SHEET_IDS[which]["TEMPLATE"],
                                  lambda sid: sheets.flag_template_requests(spec, sid, editors),
-                                 fb["protection"]["editable_ranges"]),
+                                 []),                               # hidden and fully locked
             "_meta": (SHEET_IDS[which]["_meta"], meta_tab, [])}
 
 
@@ -107,6 +107,11 @@ def build(cfg, client, which: str, service_account: str, spec=None) -> dict:
         reqs.append({"addSheet": {"properties": {"sheetId": sid, "title": title, "index": i}}})
         reqs += builder(sid)
         created.append(title)
+    repaired = []
+    tmpl = spec["flagbook"]["template_tab"]
+    if which == "flagbook" and tmpl in have and tmpl not in created:
+        repaired, fix = _repair_template(spec, client, meta, editors)
+        reqs += fix
     deleted = []
     if created and "Sheet1" in have and not client.values_get([f"'Sheet1'!A1:Z50"])[0]:
         reqs.append({"deleteSheet": {"sheetId": have["Sheet1"]["sheetId"]}})   # the empty default tab
@@ -116,9 +121,34 @@ def build(cfg, client, which: str, service_account: str, spec=None) -> dict:
     if "_meta" in created:
         client.values_update([("'_meta'!A1", meta_values(spec, cfg, service_account))])
     after = client.meta("sheets(properties(sheetId,title,hidden),protectedRanges)")
-    return {"spreadsheet": client.id, "which": which, "created": created,
+    return {"spreadsheet": client.id, "which": which, "created": created, "repaired": repaired,
             "existing": [t for t in want if t not in created], "deleted": deleted,
             "editors": editors, "problems": check(spec, after, which, editors)}
+
+
+def _repair_template(spec, client, meta, editors):
+    """An existing TEMPLATE from before it was hidden and locked, or one someone typed into:
+    the requests that make it hidden, fully locked and empty of reviewer input."""
+    title = spec["flagbook"]["template_tab"]
+    sh = next(s for s in meta["sheets"] if s["properties"]["title"] == title)
+    sid = sh["properties"]["sheetId"]
+    full = client.meta("sheets(properties(sheetId,title,hidden),protectedRanges)")
+    sh = next(s for s in full["sheets"] if s["properties"]["sheetId"] == sid)
+    done, reqs = [], []
+    if check_tab(sh, f"flagbook/{title}", [], editors):
+        reqs += [{"deleteProtectedRange": {"protectedRangeId": p["protectedRangeId"]}}
+                 for p in sh.get("protectedRanges", [])]
+        reqs.append(sheets._protect(sid, title, [], editors))
+        done.append("protection: fully locked")
+    if not sh["properties"].get("hidden"):
+        reqs.append({"updateSheetProperties": {"properties": {"sheetId": sid, "hidden": True}, "fields": "hidden"}})
+        done.append("hidden")
+    last = spec["flagbook"]["table"]["last_row"]
+    typed = sheets.reviewer_input(spec, client.values_get([f"'{title}'!A1:T{last}"])[0])
+    if typed:
+        reqs += sheets.flag_clear_requests(spec, sid)
+        done.append(f"cleared reviewer input in {', '.join(typed[:8])}" + (" ..." if len(typed) > 8 else ""))
+    return done, reqs
 
 
 def _rng_key(g: dict) -> tuple:
@@ -157,6 +187,8 @@ def check(spec, meta: dict, which: str, editors: list[str]) -> list[str]:
     for title, (_, _, unprotected) in expected_tabs(spec, which, editors).items():
         if title not in by_title:
             probs.append(f"{which}: tab {title!r} is missing")
-        else:
-            probs += check_tab(by_title[title], f"{which}/{title}", unprotected, editors)
+            continue
+        probs += check_tab(by_title[title], f"{which}/{title}", unprotected, editors)
+        if title in ("_meta", spec["flagbook"]["template_tab"]) and not by_title[title]["properties"].get("hidden"):
+            probs.append(f"{which}/{title}: should be hidden")
     return probs

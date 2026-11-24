@@ -377,6 +377,8 @@ class Bridge:
             titles = {s["properties"]["title"]: s["properties"]["sheetId"] for s in meta["sheets"]}
             reqs, new = [], []
             used = {t["title"] for t in tabs.values() if not t.get("dropped_at")}
+            ids = {s["properties"]["sheetId"] for s in meta["sheets"]}
+            next_id = max([10_000] + [i for i in ids if i < 2_000_000_000]) + 1
             for eb in create:
                 title = sheets.flag_tab_name(self.spec, archive_ctx(self.r, states[eb], self.ctl.spec(states[eb])))
                 if title in titles and title not in used:        # adopt a tab whose record was lost
@@ -384,16 +386,19 @@ class Bridge:
                     continue
                 if title in used:
                     title = f"{title}_{len(tabs)}"
-                reqs.append({"duplicateSheet": {"sourceSheetId": self.template_gid, "newSheetName": title,
-                                                "insertSheetIndex": len(titles) + len(new)}})
-                new.append((eb, title))
-            if reqs:
-                replies = self.flagbook.batch_update(reqs)
-                for (eb, title), rep in zip(new, replies):
-                    tabs[eb] = {"title": title, "gid": rep["duplicateSheet"]["properties"]["sheetId"], "created": iso()}
+                while next_id in ids:
+                    next_id += 1
+                reqs += sheets.flag_tab_copy_requests(self.spec, self.template_gid, next_id, title,
+                                                      len(titles) + len(new))
+                new.append((eb, title, next_id))
+                ids.add(next_id)
+            if reqs:   # copy TEMPLATE, show the copy, empty its reviewer cells; then set its protection
+                self.flagbook.batch_update(reqs)
+                for eb, title, gid in new:
+                    tabs[eb] = {"title": title, "gid": gid, "created": iso()}
                     self.ctl.event(eb, states[eb]["stage"], states[eb]["stage"], f"flag tab {title!r} created")
                 self._save()
-                self._protect_new([tabs[eb] for eb, _ in new])
+                self._protect_new([tabs[eb] for eb, _, _ in new])
         reqs = []
         for eb in hide:
             self._export(eb)
@@ -414,12 +419,14 @@ class Bridge:
                                f"({keep_d:g} d after it was hidden; the CSV and frozen inputs/ remain)")
 
     def _protect_new(self, new_tabs):
-        """A duplicated TEMPLATE keeps its protection in Google Sheets; if a copy lacks it, add it."""
-        meta = self.flagbook.meta("sheets(properties(sheetId,title),protectedRanges(range,editors))")
+        """A copy of TEMPLATE carries TEMPLATE's full lock: replace it with the track-tab protection
+        (reviewer ranges editable)."""
+        meta = self.flagbook.meta("sheets(properties(sheetId,title),protectedRanges(protectedRangeId))")
         by = {s["properties"]["sheetId"]: s for s in meta["sheets"]}
-        reqs = [sheets._protect(t["gid"], t["title"], self.fb["protection"]["editable_ranges"], self.editors)
-                for t in new_tabs if not [p for p in by.get(t["gid"], {}).get("protectedRanges", [])
-                                          if set(p.get("range", {})) == {"sheetId"}]]
+        reqs = []
+        for t in new_tabs:
+            old = [p["protectedRangeId"] for p in by.get(t["gid"], {}).get("protectedRanges", [])]
+            reqs += sheets.flag_tab_protection_requests(self.spec, t["gid"], t["title"], old, self.editors)
         if reqs:
             self.flagbook.batch_update(reqs)
 
@@ -509,7 +516,7 @@ class Bridge:
 
     # ---- protection drift --------------------------------------------------------------------------
     def _check_protection(self):
-        fields = "sheets(properties(sheetId,title),protectedRanges(range,editors,warningOnly,unprotectedRanges))"
+        fields = "sheets(properties(sheetId,title,hidden),protectedRanges(range,editors,warningOnly,unprotectedRanges))"
         probs = sheets_setup.check(self.spec, self.tracker.meta(fields), "tracker", self.editors)
         fmeta = self.flagbook.meta(fields)
         probs += sheets_setup.check(self.spec, fmeta, "flagbook", self.editors)
@@ -522,6 +529,13 @@ class Bridge:
                 continue
             probs += sheets_setup.check_tab(by_gid[t["gid"]], f"flagbook/{t['title']}",
                                             self.fb["protection"]["editable_ranges"], self.editors)
+        tmpl = self.fb["template_tab"]       # input typed into TEMPLATE is never read: say so
+        typed = sheets.reviewer_input(self.spec, self.flagbook.values_get(
+            [f"{gsheets.a1(tmpl)}!A1:T{self.tb['last_row']}"])[0])
+        if typed:
+            probs.append(f"flagbook/{tmpl}: has reviewer input in {', '.join(typed[:6])}"
+                         f"{' ...' if len(typed) > 6 else ''}; it is never read (use the track's own tab). "
+                         "Run init --sheets with the controller stopped to clear it")
         if probs != self.drift:
             for p in sorted(set(probs) - set(self.drift)):
                 self.ctl.event("-", "sheets", "sheets", f"protection drift: {p}")

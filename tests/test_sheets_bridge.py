@@ -311,3 +311,21 @@ def test_formula_like_text_is_written_as_text(tmp_path, monkeypatch):
     b.publish(states)
     lm = sheets.letters(sheets.tab(b.spec, "Track Summary")["columns"])
     assert t.get_value("Track Summary", f"{lm['Detail']}2") == "'=IMPORTXML(\"http://evil\")"
+
+
+def test_input_typed_into_template_is_not_copied_and_raises_the_alarm(tmp_path, monkeypatch):
+    monkeypatch.setenv("TM_FAKE_SHEETS_DIR", str(tmp_path))
+    b, ctl, states, t, f = bridge_for(tmp_path, {"x": "STAGING"})
+    for a1, v in (("M1", "RESTART"), ("D7", True), ("E7", "TEST"), ("S7", 2)):
+        f.set_value("TEMPLATE", a1, v)
+    b.publish(states)
+    assert "TEMPLATE: has reviewer input in D7, E7, M1" in b.alarm()
+    states["x"]["stage"] = "CALIBRATING"
+    b.publish(states)
+    title = b.state["tabs"]["x"]["title"]
+    assert [f.get_value(title, a) for a in ("M1", "D7", "E7", "S7")] == [None, False, None, None]
+    assert f.get_value(title, "R7").startswith("=IF(") and f.sheet(title)["properties"].get("hidden") is not True
+    prot, = f.sheet(title)["protectedRanges"]                       # the copied full lock was replaced
+    assert len(prot["unprotectedRanges"]) == 3
+    b.ingest()
+    assert not b.state["pending"] and "x" not in b.state["acks"]    # nothing to act on in the clean copy

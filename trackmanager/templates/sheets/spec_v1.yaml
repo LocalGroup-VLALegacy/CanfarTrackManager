@@ -141,7 +141,11 @@ tracker:
 flagbook:
   title: "${project.name} Flags"
   tab_name: "{config}_{project}_{mjd}_{ebid}"      # e.g. D_20A-346_59786_42455346
-  template_tab: TEMPLATE                            # built from this spec, then duplicated per EB
+  template_tab: TEMPLATE                            # built from this spec, then duplicated per EB. Hidden and
+                                                    # fully locked (2026-11-24: a reviewer typed a verdict into
+                                                    # it, and copies would have carried it to every new track);
+                                                    # each copy gets the reviewer protection below, and its
+                                                    # reviewer cells are cleared when it is made
   extra_tabs:
     - name: README
       text: |
@@ -222,4 +226,5 @@ flagbook:
          formula: '=$D7=TRUE'}
   protection:
     mode: whole_tab
-    editable_ranges: ["D7:O150", "M1", "O1"]       # reviewers: the table and the two decision cells
+    editable_ranges: ["D7:O150", "M1", "O1"]       # reviewers, on each track's tab: the table and the two decision cells
+    bridge_ranges: ["S7:T150"]                     # Added in iter, Check: written by the bridge, cleared on a new copy

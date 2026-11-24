@@ -159,8 +159,11 @@ class FakeSheets:
             for i, row in enumerate(body["rows"]):
                 for j, cell in enumerate(row.get("values", [])):
                     self._check_grid(sh, r0 + i, c0 + j)
-                    if "userEnteredValue" in cell and "userEnteredValue" in body["fields"]:
-                        sh["cells"][(r0 + i, c0 + j)] = self._value(cell)
+                    if "userEnteredValue" in body["fields"]:
+                        if "userEnteredValue" in cell:
+                            sh["cells"][(r0 + i, c0 + j)] = self._value(cell)
+                        else:                      # a field mask without a value clears the cell
+                            sh["cells"].pop((r0 + i, c0 + j), None)
             return {}
         if kind == "addProtectedRange":
             pr = copy.deepcopy(body["protectedRange"])
