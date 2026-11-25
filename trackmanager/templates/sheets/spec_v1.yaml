@@ -37,7 +37,7 @@ stage_colors:          # background per Stage (the 10 stages of trackmanager/sta
   AWAITING_DECISION: "#ea9999"
   NEEDS_MANUAL:      "#b4a7d6"
   SKIPPED:           "#999999"
-hold_color: "#ffd966"   # Stage cell when the operator HOLD flag is set (Detail says why)
+hold_color: "#ffd966"   # Stage cell when the track is on HOLD: the bridge writes Detail as "HOLD: <why>"
 
 tracker:
   title: "${project.name} Tracks"
@@ -47,7 +47,8 @@ tracker:
       header_row: 1
       frozen_rows: 1
       frozen_cols: 3
-      key: EBID                      # rows are found by this column; appended, never re-sorted or deleted
+      key: Trackname                 # rows are found by the SDM name (some archive EBs have no EB id);
+                                     # appended, never re-sorted or deleted
       color_by: Stage                # whole row coloured from stage_colors
       columns:
         - {name: EBID,              source: archive.ebid,           width: 90}
@@ -92,21 +93,22 @@ tracker:
       header_row: 1
       frozen_rows: 1
       frozen_cols: 2
-      key: EBID
+      key: Track Name
       color_by: Stage
       columns:
+        # Order (2026-11-24): what a reviewer scans for, then the sign-up cells, then track details.
         - {name: Date,           source: archive.date,     width: 90}
         - {name: Track Name,     source: archive.sdm,      width: 330}
-        - {name: EBID,           source: archive.ebid,     width: 90}
-        - {name: Target,         source: archive.target,   width: 90}
-        - {name: Configuration,  source: archive.config,   width: 70}
         - {name: Stage,          source: state.stage,      width: 140}
-        - {name: Iteration,      source: state.iteration,  width: 70}
         - {name: QA Reviewer,    source: reviewer,         width: 140,
            note: "Type your name to sign up for this track."}
         - {name: Email,          source: reviewer,         width: 200,
            validation: {type: TEXT_IS_EMAIL, strict: false,
                         help: "The address that gets the 'QA ready' email."}}
+        - {name: Target,         source: archive.target,   width: 90}
+        - {name: Configuration,  source: archive.config,   width: 70}
+        - {name: EBID,           source: archive.ebid,     width: 90}
+        - {name: Iteration,      source: state.iteration,  width: 70}
         - {name: QA Server Links, source: links.qa,        width: 90, link_text: QA,
            header_link: "${qa.home_url}", note: "Click this header for the QA home page (all tracks)."}
         - {name: QA history,     source: links.qa_track,   width: 90, link_text: all iterations}
@@ -116,7 +118,7 @@ tracker:
           source: formula
           width: 250
           formula: >-
-            =IF(AND({{EBID}}<>"", {{Stage}}="AWAITING_REVIEW"),
+            =IF(AND({{Track Name}}<>"", {{Stage}}="AWAITING_REVIEW"),
             "[${review.email_prefix}] QA ready for "&{{Track Name}}&" (iteration "&{{Iteration}}&")", "")
         - name: Email Body
           source: formula
@@ -125,28 +127,44 @@ tracker:
             =IF({{Email Subject}}="", "",
             "Hi "&{{QA Reviewer}}&" -- iteration "&{{Iteration}}&" of "&{{Track Name}}&
             " ("&{{Target}}&", "&{{Configuration}}&" configuration) is ready for QA review."&CHAR(10)&
-            "QA products: "&{{QA Server Links}}&CHAR(10)&
-            "Earlier iterations: "&{{QA history}}&CHAR(10)&
-            "Flags, verdict and refant: "&{{Flags tab}}&CHAR(10)&
+            "QA products: "&{{QA URL}}&CHAR(10)&
+            "Earlier iterations: "&{{History URL}}&CHAR(10)&
+            "Flags, verdict and refant: "&{{Flags URL}}&CHAR(10)&
             "QA guide: ${sheets.links.qa_guide}")
         - {name: Notified iter,  source: script,           width: 80,
            note: "Last iteration emailed (written by the notification script)."}
+        # Plain URLs for the email body: joining a HYPERLINK cell gives its label, not its address.
+        - {name: QA URL,         source: links.qa,         hidden: true}
+        - {name: History URL,    source: links.qa_track,   hidden: true}
+        - {name: Flags URL,      source: links.flag_tab,   hidden: true}
       protection: {mode: whole_tab, editable_columns: [QA Reviewer, Email, Notes]}
 
 flagbook:
-  title: "${project.name} Flags"
+  title: "${project.name} flag template"
   tab_name: "{config}_{project}_{mjd}_{ebid}"      # e.g. D_20A-346_59786_42455346
-  template_tab: TEMPLATE                            # built from this spec, then duplicated per EB
+  template_tab: TEMPLATE                            # the project's flag template: built from this spec, then
+                                                    # copied for each track when it first calibrates. Operators
+                                                    # put the project's likely flags in it (rows 7+); a copy keeps
+                                                    # them, and its TICKED rows apply from the first run. Hidden and
+                                                    # locked to operators (sheets.editors): reviewers never see it
+                                                    # (2026-11-24: a verdict typed into a visible TEMPLATE would have
+                                                    # been copied to every new track). Operators edit it through
+                                                    # View > Hidden sheets.
   extra_tabs:
     - name: README
       text: |
-        One tab per track. Add one row per issue, tick "Apply Row", then set the verdict in M1.
+        Each track has its own flag spreadsheet in the project's flags folder; the tracker links to it.
+        Add one row per issue, tick "Apply Row", then set the verdict in M1.
+        A new sheet starts with the project's default flag rows; the ticked ones were used from the
+        first run (their "Added in iter" is 1). Untick a row to drop it from the next run.
         RESTART runs the pipeline again with EVERY ticked row (rows from earlier iterations included;
         untick a row to drop that flag); COMPLETE accepts the track. MANUAL REVIEW and HELP REQUESTED
         hold the track for the operator, with no rerun, until you set RESTART or COMPLETE.
         Field names must match the track's fields (dropdown) or be a wildcard such as IC10*.
         Errors found when your verdict is read appear in M2 and in the "Check" column; the verdict
         is not used until they are fixed.
+        The sheet stays after the track is complete. If a track was completed by mistake, ask the
+        operator to reopen it: the data is staged again and the next run uses this sheet's ticked rows.
   header_cells:                                     # label cell -> value cell, source
     - {label: A1, text: "Scheduling Block",   value: E1, source: archive.sdm}
     - {label: A2, text: "Observation Date",   value: E2, source: archive.date}
@@ -217,4 +235,6 @@ flagbook:
          formula: '=$D7=TRUE'}
   protection:
     mode: whole_tab
-    editable_ranges: ["D7:O150", "M1", "O1"]       # reviewers: the table and the two decision cells
+    editable_ranges: ["D7:O150", "M1", "O1"]       # reviewers, on each track's tab: the table and the two decision cells
+    copy_clear_ranges: ["M1", "O1", "S7:T150"]     # never carried from TEMPLATE into a track's tab: verdict,
+                                                    # avoid-refant, Added in iter, Check

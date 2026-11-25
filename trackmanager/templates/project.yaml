@@ -62,15 +62,17 @@ review:
   enabled: true                             # false: a verified run goes straight to PROMOTING
   stale_after_h: 168
   escalate_after_iterations: 6
-  email_prefix: "[<project>-QA]"
+  email_prefix: "<project>-QA"              # email subjects start "[<project>-QA] QA ready for ..."
 
-sheets:                                     # (M4)
+sheets:                                     # Google tracker + flag book (M4; setup: docs/sheets_setup.md)
   enabled: false
-  tracker_id: null
-  flagbook_id: null
-  credentials: secrets/gsheets.json
-  editors: []
-  links: {}
+  tracker_id: null                          # spreadsheet ids: the part of the URL between /d/ and /edit
+  flagbook_id: null                         # template workbook (README + the project's flag TEMPLATE)
+  flags_folder_id: null                     # Drive folder (shared with the service account) for one flag spreadsheet per track
+  credentials: secrets/gsheets.json         # service-account JSON key; must be mode 600
+  editors: [koch.eric.w@gmail.com]          # humans who may edit protected ranges (the service account is added)
+  links: {qa_guide: <url>, flag_rows_help: <url>}
+  protection_check_cycles: 12               # read protections back every N cycles; drift raises an alarm
 
 controller:
   image: images.canfar.net/skaha/base-notebook:latest

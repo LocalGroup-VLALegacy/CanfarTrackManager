@@ -4,6 +4,7 @@
     bdf_count(sdm)      files in ASDMBinary/
     byte_size(sdm)      total bytes, symlinks inside the SDM not followed
     field_intents(sdm)  {field name: {"scans": n, "intents": [...]}} from Main.xml + Scan.xml + Field.xml
+    antennas(sdm)       antenna names (ea01, ...) from Antenna.xml, for checking flag rows
 
 Scan.xml stores intents as an ASDM array, "<rank> <count> <v1> ... <vN>" (e.g. "1 3 CALIBRATE_FLUX
 CALIBRATE_BANDPASS CALIBRATE_DELAY"); older files carry a "#SUBINTENT" suffix, which is dropped.
@@ -53,6 +54,14 @@ def byte_size(sdm) -> int:
                 else:
                     total += e.stat(follow_symlinks=False).st_size
     return total
+
+
+def antennas(sdm) -> list[str]:
+    """Antenna names in Antenna.xml, sorted; [] if the table is missing."""
+    path = Path(sdm) / "Antenna.xml"
+    if not path.exists():
+        return []
+    return sorted({r["name"] for r in _rows(path) if r.get("name")})
 
 
 def parse_intents(text: str) -> list[str]:

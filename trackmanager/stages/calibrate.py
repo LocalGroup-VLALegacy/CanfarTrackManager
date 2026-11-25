@@ -18,9 +18,16 @@ def attempt_ref(ctl, st, k=None) -> Attempt:
 
 
 def submit(ctl, st):
+    """Submit the next attempt. Returns a reason string (and submits nothing) when the track has to
+    wait: with the Sheets bridge on, a run whose inputs no verdict froze (iteration 1, or the run
+    after a reopen) first freezes the ticked rows of the track's flag sheet."""
     eb = st["eb"]
     spec = ctl.spec(st)
     n, k = st.get("iteration", 1), st["attempt"] + 1
+    if k == 1 and ctl.bridge and not (ctl.r.inputs(eb, n) / "manual_flagging.txt").exists():
+        wait = ctl.bridge.run_inputs(st)
+        if wait:
+            return wait
     lock = ctl.r.track(eb) / "worker.lock"
     lock.unlink(missing_ok=True)  # every earlier attempt is terminal by now
     ctl.r.inputs(eb, n).mkdir(parents=True, exist_ok=True)

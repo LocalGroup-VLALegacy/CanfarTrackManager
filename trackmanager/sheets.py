@@ -18,6 +18,7 @@ from pathlib import Path
 import yaml
 
 SPEC = Path(__file__).resolve().parent / "templates" / "sheets" / "spec_v1.yaml"
+TRACKER_ROWS = 5000        # grid rows of a tracker tab; validation and reviewer ranges reach this row
 
 
 # ---- spec loading --------------------------------------------------------------------------
@@ -123,8 +124,17 @@ def tracker_row(tab_spec: dict, ctx: dict, row: int, existing: dict | None = Non
 
 
 def flag_tab_name(spec: dict, archive: dict) -> str:
-    return spec["flagbook"]["tab_name"].format(config=archive["config"], project=archive["project"],
-                                               mjd=int(float(archive["mjd"])), ebid=archive["ebid"])
+    """<config>_<project>_<mjd>_<ebid>. An EB with no EB id (TAP names a few
+    `<project>_sb<sbid>_<n>_<m>.<mjd>`) or a track with no archive record uses its SDM or track
+    name instead, so every track gets a distinct tab name."""
+    try:
+        if not archive.get("ebid"):
+            raise KeyError("ebid")
+        return spec["flagbook"]["tab_name"].format(config=archive["config"], project=archive["project"],
+                                                   mjd=int(float(archive["mjd"])), ebid=archive["ebid"])
+    except (KeyError, TypeError, ValueError):
+        name = str(archive.get("sdm") or archive.get("eb") or "track")
+        return (f"{archive['config']}_" if archive.get("config") else "") + name[-90:]
 
 
 def flag_tab_cells(spec: dict, ctx: dict) -> dict:
@@ -230,9 +240,20 @@ def _width(sheet_id, idx: int, px: int) -> dict:
         "properties": {"pixelSize": px}, "fields": "pixelSize"}}
 
 
-def _stage_rules(spec, sheet_id, stage_letter: str, ncols: int, first_row: int) -> list[dict]:
+def _stage_rules(spec, sheet_id, stage_letter: str, ncols: int, first_row: int,
+                 detail_letter: str | None = None) -> list[dict]:
+    """Row colours by Stage. With a Detail column, a first rule (it wins over the row colours)
+    paints the Stage cell in hold_color when Detail starts with "HOLD:"."""
     reqs = []
-    for i, (stage, color) in enumerate(spec["stage_colors"].items()):
+    if detail_letter and spec.get("hold_color"):
+        sc = col_index(stage_letter)
+        reqs.append({"addConditionalFormatRule": {"index": 0, "rule": {
+            "ranges": [{"sheetId": sheet_id, "startRowIndex": first_row - 1,
+                        "startColumnIndex": sc, "endColumnIndex": sc + 1}],
+            "booleanRule": {"condition": {"type": "CUSTOM_FORMULA",
+                                          "values": [{"userEnteredValue": f'=LEFT(${detail_letter}{first_row}, 5)="HOLD:"'}]},
+                            "format": {"backgroundColor": _rgb(spec["hold_color"])}}}}})
+    for i, (stage, color) in enumerate(spec["stage_colors"].items(), start=len(reqs)):
         reqs.append({"addConditionalFormatRule": {"index": i, "rule": {
             "ranges": [{"sheetId": sheet_id, "startRowIndex": first_row - 1,
                         "startColumnIndex": 0, "endColumnIndex": ncols}],
@@ -249,22 +270,27 @@ def tracker_tab_requests(spec: dict, tab_name: str, sheet_id: int, editors: list
     lmap = letters(cols)
     reqs = [{"updateSheetProperties": {"properties": {
         "sheetId": sheet_id, "title": tab_name,
-        "gridProperties": {"frozenRowCount": t.get("frozen_rows", 1), "frozenColumnCount": t.get("frozen_cols", 0)}},
-        "fields": "title,gridProperties(frozenRowCount,frozenColumnCount)"}},
+        "gridProperties": {"rowCount": TRACKER_ROWS, "columnCount": max(26, len(cols)),
+                           "frozenRowCount": t.get("frozen_rows", 1), "frozenColumnCount": t.get("frozen_cols", 0)}},
+        "fields": "title,gridProperties(rowCount,columnCount,frozenRowCount,frozenColumnCount)"}},
         _header_cells(sheet_id, hr - 1, [c["name"] for c in cols],
                       links={c["name"]: c["header_link"] for c in cols if c.get("header_link")})]
     for i, c in enumerate(cols):
         if c.get("width"):
             reqs.append(_width(sheet_id, i, c["width"]))
+        if c.get("hidden"):
+            reqs.append({"updateDimensionProperties": {"range": {"sheetId": sheet_id, "dimension": "COLUMNS",
+                                                                 "startIndex": i, "endIndex": i + 1},
+                                                       "properties": {"hiddenByUser": True}, "fields": "hiddenByUser"}})
         if c.get("validation"):
             L = lmap[c["name"]]
-            reqs.append(_validation(sheet_id, f"{L}{hr + 1}:{L}5000", c["validation"]))
+            reqs.append(_validation(sheet_id, f"{L}{hr + 1}:{L}{TRACKER_ROWS}", c["validation"]))
         if c.get("note"):
             reqs.append({"updateCells": {"start": {"sheetId": sheet_id, "rowIndex": hr - 1, "columnIndex": i},
                                          "rows": [{"values": [{"note": c["note"]}]}], "fields": "note"}})
     if t.get("color_by"):
-        reqs += _stage_rules(spec, sheet_id, lmap[t["color_by"]], len(cols), hr + 1)
-    editable = [f"{lmap[n]}{hr + 1}:{lmap[n]}5000" for n in t["protection"]["editable_columns"]]
+        reqs += _stage_rules(spec, sheet_id, lmap[t["color_by"]], len(cols), hr + 1, lmap.get("Detail"))
+    editable = [f"{lmap[n]}{hr + 1}:{lmap[n]}{TRACKER_ROWS}" for n in t["protection"]["editable_columns"]]
     reqs.append(_protect(sheet_id, tab_name, editable, editors))
     return reqs
 
@@ -274,9 +300,10 @@ def flag_template_requests(spec: dict, sheet_id: int, editors: list[str]) -> lis
     fb, tb = spec["flagbook"], spec["flagbook"]["table"]
     cols = tb["columns"]
     reqs = [{"updateSheetProperties": {"properties": {
-        "sheetId": sheet_id, "title": fb["template_tab"],
-        "gridProperties": {"frozenRowCount": tb["header_row"], "rowCount": tb["last_row"] + 10, "columnCount": 26}},
-        "fields": "title,gridProperties(frozenRowCount,rowCount,columnCount)"}}]
+        "sheetId": sheet_id, "title": fb["template_tab"], "hidden": True,
+        "gridProperties": {"frozenRowCount": tb["header_row"], "columnCount": 26,
+                           "rowCount": max(tb["last_row"], int(re.search(r"(\d+)$", tb["hidden_range"]).group(1))) + 10}},
+        "fields": "title,hidden,gridProperties(frozenRowCount,rowCount,columnCount)"}}]
     cells = {}
     for h in fb["header_cells"]:
         if "label" in h:
@@ -329,8 +356,56 @@ def flag_template_requests(spec: dict, sheet_id: int, editors: list[str]) -> lis
             "ranges": [_grid(sheet_id, cf["range"])],
             "booleanRule": {"condition": {"type": "CUSTOM_FORMULA", "values": [{"userEnteredValue": cf["formula"]}]},
                             "format": {"backgroundColor": _rgb(cf["color"])}}}}})
-    reqs.append(_protect(sheet_id, fb["template_tab"], fb["protection"]["editable_ranges"], editors))
+    reqs.append(_protect(sheet_id, fb["template_tab"], [], editors))   # fully locked; copies get the reviewer ranges
     return reqs
+
+
+def flag_clear_requests(spec: dict, sheet_id: int) -> list[dict]:
+    """Empty the cells a track's tab must not inherit from TEMPLATE (`copy_clear_ranges`: verdict,
+    avoid-refant, Added in iter, Check). The template's flag rows are kept."""
+    fb = spec["flagbook"]
+    bools = {c["col"] for c in fb["table"]["columns"] if c.get("validation", {}).get("type") == "BOOLEAN"}
+    reqs = []
+    for a1 in fb["protection"]["copy_clear_ranges"]:
+        g = _grid(sheet_id, a1)
+        row = [{"userEnteredValue": {"boolValue": False}} if col_letter(c) in bools else {}
+               for c in range(g["startColumnIndex"], g["endColumnIndex"])]
+        reqs.append({"updateCells": {"start": {"sheetId": sheet_id, "rowIndex": g["startRowIndex"],
+                                               "columnIndex": g["startColumnIndex"]},
+                                     "rows": [{"values": row} for _ in range(g["startRowIndex"], g["endRowIndex"])],
+                                     "fields": "userEnteredValue"}})
+    return reqs
+
+
+def flag_tab_copy_requests(spec: dict, template_id: int, new_id: int, title: str, index: int) -> list[dict]:
+    """A track's flag tab: copy TEMPLATE (its default flag rows included), show it, and clear the
+    verdict cells. Its protection is set afterwards (flag_tab_protection_requests), once the copied
+    one's id is known."""
+    return [{"duplicateSheet": {"sourceSheetId": template_id, "newSheetId": new_id, "newSheetName": title,
+                                "insertSheetIndex": index}},
+            {"updateSheetProperties": {"properties": {"sheetId": new_id, "hidden": False}, "fields": "hidden"}},
+            *flag_clear_requests(spec, new_id)]
+
+
+def flag_tab_protection_requests(spec: dict, sheet_id: int, title: str, protected_range_ids, editors) -> list[dict]:
+    """Replace whatever protection a tab carries with the track-tab one (reviewer ranges editable)."""
+    return [*({"deleteProtectedRange": {"protectedRangeId": pid}} for pid in protected_range_ids),
+            _protect(sheet_id, title, spec["flagbook"]["protection"]["editable_ranges"], editors)]
+
+
+def template_input(spec: dict, grid) -> list[str]:
+    """Cells of TEMPLATE (a values_get grid of A1:T<last_row>) that hold something a track's tab must
+    not inherit: a verdict, an avoid-refant list, Added in iter or Check. Flag rows are expected."""
+    fb = spec["flagbook"]
+    out = []
+    for a1 in fb["protection"]["copy_clear_ranges"]:
+        g = _grid(0, a1)
+        for r in range(g["startRowIndex"], g["endRowIndex"]):
+            for c in range(g["startColumnIndex"], g["endColumnIndex"]):
+                v = grid[r][c] if r < len(grid) and c < len(grid[r]) else ""
+                if v not in ("", None, False) and str(v).upper() != "FALSE":
+                    out.append(f"{col_letter(c)}{r + 1}")
+    return out
 
 
 # ---- local preview ----------------------------------------------------------------------------

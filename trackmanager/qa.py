@@ -36,12 +36,16 @@ def qa_dir(ctl, eb, n):
     return ctl.out_dir("products_dir", eb) / f"iter_{n}"
 
 
-def qa_url(ctl, path):
+def url_for(url_base, path):
     """Browser link through the ARC files service, or None for a path outside /arc."""
     path = str(Path(path).resolve())
     if not path.startswith("/arc/"):
         return None
-    return ctl.qa("url_base").rstrip("/") + path[len("/arc"):]
+    return url_base.rstrip("/") + path[len("/arc"):]
+
+
+def qa_url(ctl, path):
+    return url_for(ctl.qa("url_base"), path)
 
 
 def grant_qa_read(ctl, path, recursive=True):

@@ -36,7 +36,7 @@ def test_formulas_use_header_letters(spec):
     lm = sheets.letters(t["columns"])
     subj = sheets.fill_formula(next(c for c in t["columns"] if c["name"] == "Email Subject")["formula"],
                                t["columns"], 7)
-    assert f'{lm["EBID"]}7<>""' in subj and f'{lm["Stage"]}7="AWAITING_REVIEW"' in subj
+    assert f'{lm["Track Name"]}7<>""' in subj and f'{lm["Stage"]}7="AWAITING_REVIEW"' in subj
     assert "[VVINGS-QA] QA ready for" in subj and "{{" not in subj and "\n" not in subj
 
 
@@ -58,8 +58,15 @@ def test_track_summary_fully_protected_and_coloured(spec):
     reqs = sheets.tracker_tab_requests(spec, "Track Summary", 10, EDITORS)
     prot = [r["addProtectedRange"]["protectedRange"] for r in reqs if "addProtectedRange" in r][0]
     assert prot["unprotectedRanges"] == []
-    rules = [r for r in reqs if "addConditionalFormatRule" in r]
-    assert len(rules) == len(spec["stage_colors"])
+    rules = [r["addConditionalFormatRule"] for r in reqs if "addConditionalFormatRule" in r]
+    assert len(rules) == len(spec["stage_colors"]) + 1            # + the HOLD rule on the Stage cell
+    lm = sheets.letters(sheets.tab(spec, "Track Summary")["columns"])
+    hold = rules[0]
+    assert hold["index"] == 0 and hold["rule"]["ranges"][0]["startColumnIndex"] == sheets.col_index(lm["Stage"])
+    assert f'LEFT(${lm["Detail"]}2, 5)="HOLD:"' in hold["rule"]["booleanRule"]["condition"]["values"][0]["userEnteredValue"]
+    assert [r["index"] for r in rules] == list(range(len(rules)))
+    grid = reqs[0]["updateSheetProperties"]["properties"]["gridProperties"]
+    assert grid["rowCount"] == sheets.TRACKER_ROWS and grid["columnCount"] >= len(lm)
 
 
 def test_tracker_row_never_overwrites_reviewer_cells(spec):
@@ -78,8 +85,14 @@ def test_tracker_row_never_overwrites_reviewer_cells(spec):
 def test_flag_template_requests(spec):
     reqs = sheets.flag_template_requests(spec, 5, EDITORS)
     prot = [r["addProtectedRange"]["protectedRange"] for r in reqs if "addProtectedRange" in r][0]
+    assert prot["unprotectedRanges"] == []                      # TEMPLATE itself is fully locked ...
+    assert reqs[0]["updateSheetProperties"]["properties"]["hidden"] is True   # ... and hidden
+    copy = sheets.flag_tab_protection_requests(spec, 77, "D_x", [5, 6], EDITORS)   # ... each copy gets the ranges
+    assert copy[:2] == [{"deleteProtectedRange": {"protectedRangeId": 5}}, {"deleteProtectedRange": {"protectedRangeId": 6}}]
+    prot = copy[2]["addProtectedRange"]["protectedRange"]
     un = {(u["startRowIndex"], u["endRowIndex"], u["startColumnIndex"], u["endColumnIndex"]) for u in prot["unprotectedRanges"]}
     assert un == {(6, 150, 3, 15), (0, 1, 12, 13), (0, 1, 14, 15)}  # D7:O150, M1, O1
+    assert prot["range"] == {"sheetId": 77}
     verdict = [r["setDataValidation"] for r in reqs if "setDataValidation" in r
                and r["setDataValidation"]["range"]["startColumnIndex"] == 12 and r["setDataValidation"]["range"]["startRowIndex"] == 0]
     assert [v["userEnteredValue"] for v in verdict[0]["rule"]["condition"]["values"]] == \
@@ -195,7 +208,12 @@ def test_qa_home_and_history_links(spec):
         assert row["QA history"].startswith('=HYPERLINK("https://ws-uv.canfar.net/arc/files/') \
             and row["QA history"].endswith('"all iterations")')
     body = sheets.tab(spec, "QA Sign-up")["columns"]
-    assert "{{QA history}}" in next(c for c in body if c["name"] == "Email Body")["formula"]
+    formula = next(c for c in body if c["name"] == "Email Body")["formula"]
+    # the body joins the plain-URL columns: a HYPERLINK cell would give its label ("QA"), not the address
+    assert all(f"{{{{{n}}}}}" in formula for n in ("QA URL", "History URL", "Flags URL"))
+    assert "{{QA Server Links}}" not in formula and "{{QA history}}" not in formula
+    row = sheets.tracker_row(sheets.tab(spec, "QA Sign-up"), samples()[0], 2)
+    assert row["QA URL"] == samples()[0]["links"]["qa"] and not row["QA URL"].startswith("=")
     cells = sheets.flag_tab_cells(spec, samples()[0])
     assert cells["H3"].endswith('"QA history")')
     j3 = next(h for h in spec["flagbook"]["header_cells"] if h.get("cell") == "J3")

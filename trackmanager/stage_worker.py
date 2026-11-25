@@ -105,6 +105,7 @@ def verify(sdm_path: Path, est_bytes, tol, man):
     try:
         man["main_rows"], man["bdf_files"] = sdmlib.main_rows(sdm_path), sdmlib.bdf_count(sdm_path)
         man["fields"] = sdmlib.field_intents(sdm_path)
+        man["antennas"] = sdmlib.antennas(sdm_path)
     except sdmlib.SdmError as e:
         return [str(e)], 11
     if man["bdf_files"] != man["main_rows"]:
